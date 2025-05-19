@@ -27,67 +27,71 @@ register(
     },
 )
 
-# 1) HistoryWrapper: info['patient_state'] 시계열을 info['state_hist']로 축적
-class HistoryWrapper(Wrapper):
+# 1) MultiHistoryWrapper: bg, meal, action 히스토리(12스텝) 생성
+class MultiHistoryWrapper(Wrapper):
     def __init__(self, env, history_length: int = 12):
         super().__init__(env)
         self.history_length = history_length
-        self.buffer = deque(maxlen=history_length)
+        self.bg_buf      = deque(maxlen=history_length)
+        self.meal_buf    = deque(maxlen=history_length)
+        self.insulin_buf = deque(maxlen=history_length)
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        # 초기 상태로 history 채우기
-        init = info["patient_state"].copy()
-        self.buffer.clear()
+        # 초기값으로 버퍼 채우기
+        init_bg   = info["bg"]
+        init_meal = info["meal"]
+        init_ins  = 0.0  # reset 직후엔 action 없음 → 0
         for _ in range(self.history_length):
-            self.buffer.append(init)
-        info["state_hist"] = np.stack(self.buffer, axis=0)  # (12, n_feats)
+            self.bg_buf.append(init_bg)
+            self.meal_buf.append(init_meal)
+            self.insulin_buf.append(init_ins)
+        # info 에 히스토리 추가
+        info["hist_bg"]      = np.array(self.bg_buf)       # shape=(12,)
+        info["hist_meal"]    = np.array(self.meal_buf)     # shape=(12,)
+        info["hist_insulin"] = np.array(self.insulin_buf)  # shape=(12,)
         return obs, info
 
     def step(self, action):
+        # action 값도 히스토리에 기록
         obs, reward, terminated, truncated, info = self.env.step(action)
-        # 최신 상태 추가
-        self.buffer.append(info["patient_state"].copy())
-        info["state_hist"] = np.stack(self.buffer, axis=0)
+        if isinstance(action, (np.ndarray, list, tuple)):
+            ins = float(np.array(action).ravel()[0])
+        else:
+            ins = float(action)
+        self.bg_buf.append(info["bg"])
+        self.meal_buf.append(info["meal"])
+        self.insulin_buf.append(ins)
+        info["hist_bg"]      = np.array(self.bg_buf)
+        info["hist_meal"]    = np.array(self.meal_buf)
+        info["hist_insulin"] = np.array(self.insulin_buf)
         return obs, reward, terminated, truncated, info
 
 # 2) LightGBM 기반 보상 래퍼
-class LGBMRewardWrapper(RewardWrapper):
+class LGBMRewardWrapper(Wrapper):
     def __init__(self, env, model_path: str):
         super().__init__(env)
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"모델 파일이 없습니다: {model_path}")
-        # pickle 또는 joblib 로드
         with open(model_path, "rb") as f:
             self.model = pickle.load(f)
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
-        # print(type(info), info.keys() if isinstance(info, dict) else info)
-        # <class 'dict'> dict_keys(['sample_time', 'patient_name', 'meal', 'patient_state', 'time', 'bg', 'lbgi', 'hbgi', 'risk', 'episode'])
+        # 히스토리 꺼내기
+        bg_hist      = info["hist_bg"]      # (12,)
+        meal_hist    = info["hist_meal"]    # (12,)
+        insulin_hist = info["hist_insulin"] # (12,)
 
-        # 1) patient_state 꺼내기
-        ps = info["patient_state"]
-
-        # 2) 주요 피처 추출
-        # basal_hist = ps["basal"][-12:]
-        # bolus_hist = ps["bolus"][-12:]
-        # meal_hist  = ps["meal"][-12:]
-
-        # 3) 피처 벡터 합치기 (여기서는 CGM만 사용)
-        X = ps.reshape(1, -1)
-
-        # 4) LightGBM 모델 예측 → 보상으로 사용
+        # 모델 입력용 1D 피처 벡터 생성
+        X = np.concatenate([bg_hist, meal_hist, insulin_hist]).reshape(1, -1)
         new_reward = float(self.model.predict(X)[0])
 
-        # 5) 새로운 reward와 함께 리턴
         return obs, new_reward, terminated, truncated, info
 
+# 3) 서브환경 팩토리
 def make_env():
-    """각 서브환경 초기화: base → History → RewardWrapper 체인"""
     base = gym.make("simglucose-adol2-v0")
-    hist = HistoryWrapper(base, history_length=12)
-    rew  = LGBMRewardWrapper(hist, model_path="lgbm_gap_1_prior_12_addition_0_model_standard.pkl")
+    hist = MultiHistoryWrapper(base, history_length=12)
+    rew  = LGBMRewardWrapper(hist, model_path="lgbm_model.pkl")
     return rew
 
 def main():

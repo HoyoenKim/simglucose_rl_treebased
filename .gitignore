@@ -6,3 +6,6 @@ ppo_simglucose_adol2/
 .idea/
 __pycahce__/
 *.pyc
+data/
+hyperparameter_tuning/
+model/

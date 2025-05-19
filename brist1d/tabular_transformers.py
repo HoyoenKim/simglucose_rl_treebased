@@ -361,27 +361,28 @@ def data_expander(df, gap, n_prior, addition, data_source):
     bg = df.filter(regex="bg-.*")
     ins = df.filter(regex="insulin-.*")
     carbs =df.filter(regex="carbs-.*")
-    hr = df.filter(regex="hr.*")
-    steps = df.filter(regex="steps-.*")
-    cals = df.filter(regex="cals.*")
-    activity = df.filter(regex="activity.*")
+    #hr = df.filter(regex="hr.*")
+    #steps = df.filter(regex="steps-.*")
+    #cals = df.filter(regex="cals.*")
+    #activity = df.filter(regex="activity.*")
     time_in_minutes = time_str_to_minutes(df['time'])
 
     bg_cols = bg.columns.to_list()
     ins_cols = ins.columns.to_list()
     carbs_cols = carbs.columns.to_list()
-    hr_cols = hr.columns.to_list()
-    steps_cols = steps.columns.to_list()
-    activity_cols = activity.columns.to_list()
+    #hr_cols = hr.columns.to_list()
+    #steps_cols = steps.columns.to_list()
+    #activity_cols = activity.columns.to_list()
 
     bg_cols = bg_cols[-(gap * n_prior + addition):]
     ins_cols = ins_cols[-(gap * n_prior + addition):]
     carbs_cols = carbs_cols[-(gap * n_prior + addition):]
-    hr_cols = hr_cols[-(gap * n_prior + addition):]
-    steps_cols = steps_cols[-(gap * n_prior + addition):]
-    activity_cols = activity_cols[-(gap * n_prior + addition):]
+    #hr_cols = hr_cols[-(gap * n_prior + addition):]
+    #steps_cols = steps_cols[-(gap * n_prior + addition):]
+    #activity_cols = activity_cols[-(gap * n_prior + addition):]
 
-    cols_for_drop_duplicates = ['p_num', 'time'] + bg_cols + ins_cols + carbs_cols + hr_cols + steps_cols + activity_cols
+    #cols_for_drop_duplicates = ['p_num', 'time'] + bg_cols + ins_cols + carbs_cols + hr_cols + steps_cols + activity_cols
+    cols_for_drop_duplicates = ['p_num', 'time'] + bg_cols + ins_cols + carbs_cols
 
     if data_source == 'train':
         base_X = df.drop('bg+1:00', axis=1).copy()
@@ -404,12 +405,13 @@ def data_expander(df, gap, n_prior, addition, data_source):
         bg = bg.shift(axis=1)
         ins = ins.shift(axis=1)
         carbs = carbs.shift(axis=1)
-        hr = hr.shift(axis=1)
-        steps = steps.shift(axis=1)
-        cals = cals.shift(axis=1)
-        activity = activity.shift(axis=1)
+        #hr = hr.shift(axis=1)
+        #steps = steps.shift(axis=1)
+        #cals = cals.shift(axis=1)
+        #activity = activity.shift(axis=1)
 
-        shifted_base_X = pd.concat([row_id, p_num, time_as_string, bg, ins, carbs, hr, steps, cals, activity], axis=1)
+        #shifted_base_X = pd.concat([row_id, p_num, time_as_string, bg, ins, carbs, hr, steps, cals, activity], axis=1)
+        shifted_base_X = pd.concat([row_id, p_num, time_as_string, bg, ins, carbs], axis=1)
         shifted_base_X.reset_index(drop=False, inplace=True)
         shifted_base_X['iter'] = i + 1
         base_X = pd.concat([shifted_base_X, base_X], ignore_index=True)            
@@ -427,10 +429,10 @@ def data_expander(df, gap, n_prior, addition, data_source):
     bg = base_X.filter(regex="bg-.*")
     ins = base_X.filter(regex="insulin-.*")
     carbs =base_X.filter(regex="carbs-.*")
-    hr = base_X.filter(regex="hr.*")
-    steps = base_X.filter(regex="steps-.*")
-    cals = base_X.filter(regex="cals.*")
-    activity = base_X.filter(regex="activity.*")
+    #hr = base_X.filter(regex="hr.*")
+    #steps = base_X.filter(regex="steps-.*")
+    #cals = base_X.filter(regex="cals.*")
+    #activity = base_X.filter(regex="activity.*")
 
     target = bg['bg-0:00']
     target.name = 'bg+1:00'
@@ -438,12 +440,13 @@ def data_expander(df, gap, n_prior, addition, data_source):
     bg = bg.shift(periods=12, axis=1)
     ins = ins.shift(periods=12, axis=1)
     carbs = carbs.shift(periods=12, axis=1)
-    hr = hr.shift(periods=12, axis=1)
-    steps = steps.shift(periods=12, axis=1)
-    cals = cals.shift(periods=12, axis=1)
-    activity = activity.shift(periods=12, axis=1)
+    #hr = hr.shift(periods=12, axis=1)
+    #steps = steps.shift(periods=12, axis=1)
+    #cals = cals.shift(periods=12, axis=1)
+    #activity = activity.shift(periods=12, axis=1)
 
-    X = pd.concat([iteration, row_id, p_num, time, bg, ins, carbs, hr, steps, cals, activity, target], axis=1)
+    #X = pd.concat([iteration, row_id, p_num, time, bg, ins, carbs, hr, steps, cals, activity, target], axis=1)
+    X = pd.concat([iteration, row_id, p_num, time, bg, ins, carbs, target], axis=1)
     X.reset_index(drop=True, inplace=True)
 
     time_in_minutes = time_str_to_minutes(X['time'])
@@ -477,10 +480,10 @@ def feature_transformer(df, gap, n_prior, data_source):
     bg = df.filter(regex="bg-.*")
     ins = df.filter(regex="insulin-.*")
     carbs = df.filter(regex="carbs-.*")
-    steps = df.filter(regex="steps-.*")
-    hr = df.filter(regex="hr.*")
-    cals = df.filter(regex="cals.*")
-    activity = df.filter(regex="activity.*")
+    #steps = df.filter(regex="steps-.*")
+    #hr = df.filter(regex="hr.*")
+    #cals = df.filter(regex="cals.*")
+    #activity = df.filter(regex="activity.*")
     timestamp = df['time']
     
     X['p_num'] = df.p_num
@@ -489,10 +492,10 @@ def feature_transformer(df, gap, n_prior, data_source):
     X = pd.concat([X if not X.empty else None, blood_glucose_interpolation_stats(bg, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
     X = pd.concat([X if not X.empty else None, insulin_interpolation_stats(ins, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
     X = pd.concat([X if not X.empty else None, carbs_interpolation_stats(carbs, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
-    X = pd.concat([X if not X.empty else None, steps_interpolation_stats(steps, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
-    X = pd.concat([X if not X.empty else None, heart_rate_interpolation_stats(hr, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
-    X = pd.concat([X if not X.empty else None, calories_interpolation_stats(cals, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
-    X = pd.concat([X if not X.empty else None, activity_interpolation_stats(activity, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
+    #X = pd.concat([X if not X.empty else None, steps_interpolation_stats(steps, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
+    #X = pd.concat([X if not X.empty else None, heart_rate_interpolation_stats(hr, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
+    #X = pd.concat([X if not X.empty else None, calories_interpolation_stats(cals, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
+    #X = pd.concat([X if not X.empty else None, activity_interpolation_stats(activity, gap=gap, n_prior=n_prior)], axis=1, ignore_index=False)
 
     if data_source == 'train':
         y = df['bg+1:00']
