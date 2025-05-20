@@ -1,5 +1,6 @@
 import os
 import pickle
+import pandas as pd
 import numpy as np
 from collections import deque
 
@@ -71,20 +72,60 @@ class MultiHistoryWrapper(Wrapper):
 class LGBMRewardWrapper(Wrapper):
     def __init__(self, env, model_path: str):
         super().__init__(env)
+        # 1) 파이프라인 전체(Transformer + Regressor) 로드
         with open(model_path, "rb") as f:
-            self.model = pickle.load(f)
+            self.pipeline = pickle.load(f)
+        # 2) Transformer와 Regressor 분리
+        self.transformer = self.pipeline.named_steps["transform"]
+        self.regressor   = self.pipeline.named_steps["regressor"]
+        self.bg_gap = 5
 
     def step(self, action):
         obs, _, terminated, truncated, info = self.env.step(action)
-        # 히스토리 꺼내기
-        bg_hist      = info["hist_bg"]      # (12,)
-        meal_hist    = info["hist_meal"]    # (12,)
-        insulin_hist = info["hist_insulin"] # (12,)
 
-        # 모델 입력용 1D 피처 벡터 생성
-        X = np.concatenate([bg_hist, meal_hist, insulin_hist]).reshape(1, -1)
-        new_reward = float(self.model.predict(X)[0])
+        # —————————————— 1) 원본 X 배열 생성 ——————————————
+        p_num = "p02"
+        t = info["time"]
+        minutes = t.hour * 60 + t.minute
+        sin_t = np.sin(2 * np.pi * minutes / 1440)
+        cos_t = np.cos(2 * np.pi * minutes / 1440)
 
+        hist_bg     = info["hist_bg"]
+        current_bg  = float(info["bg"])
+        bg_lags     = np.concatenate([[current_bg], hist_bg])  # (13,)
+        bg_diff     = np.diff(bg_lags)                         # (12,)
+        insulin_hist= info["hist_insulin"]                     # (12,)
+        carbs_hist  = info["hist_meal"]                        # (12,)
+
+        feat_arr = np.concatenate([
+            [p_num], [self.bg_gap], [sin_t], [cos_t],
+            bg_lags, bg_diff,
+            insulin_hist, carbs_hist
+        ]).reshape(1, -1)
+
+        # —————————————— 2) 원래 기대 피처명으로 DataFrame 생성 ——————————————
+        input_cols = list(self.transformer.feature_names_in_)
+        feat_df    = pd.DataFrame(feat_arr, columns=input_cols)
+
+        # 모든 행·열, 인덱스 없이 출력
+        pd.set_option("display.max_rows", None)
+        pd.set_option("display.max_columns", None)
+        print(feat_df.to_string(index=False))
+
+        # —————————————— 3) 숫자형 칼럼들 float 으로 캐스팅 ——————————————
+        #    (p_num 은 object, 나머지는 모두 float)
+        for c in feat_df.columns:
+            if c != "p_num":
+                feat_df[c] = feat_df[c].astype(float)
+
+        # —————————————— 4) 인코더 → 예측 ——————————————
+        Xt = self.transformer.transform(feat_df)
+        # transformer 출력도 object dtype 이 남아 있을 수 있으므로,
+        # Xt 가 DataFrame 이면 전체를 float 으로 바꿔줍니다
+        if isinstance(Xt, pd.DataFrame):
+            Xt = Xt.astype(float)
+
+        new_reward = float(self.regressor.predict(Xt)[0])
         return obs, new_reward, terminated, truncated, info
 
 # 3) 서브환경 팩토리
