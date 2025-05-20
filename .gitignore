@@ -10,3 +10,4 @@ __pycahce__/
 data/
 hyperparameter_tuning/
 model/
+*.png
