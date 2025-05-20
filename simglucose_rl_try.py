@@ -15,6 +15,8 @@ from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.callbacks import EvalCallback
 
 # 1) simglucose 환경 등록
 register(
@@ -108,9 +110,9 @@ class LGBMRewardWrapper(Wrapper):
         feat_df    = pd.DataFrame(feat_arr, columns=input_cols)
 
         # 모든 행·열, 인덱스 없이 출력
-        pd.set_option("display.max_rows", None)
-        pd.set_option("display.max_columns", None)
-        print(feat_df.to_string(index=False))
+        # pd.set_option("display.max_rows", None)
+        # pd.set_option("display.max_columns", None)
+        # print(feat_df.to_string(index=False))
 
         # —————————————— 3) 숫자형 칼럼들 float 으로 캐스팅 ——————————————
         #    (p_num 은 object, 나머지는 모두 float)
@@ -132,10 +134,13 @@ class LGBMRewardWrapper(Wrapper):
 def make_env():
     base = gym.make("simglucose-adol2-v0")
     hist = MultiHistoryWrapper(base, history_length=12)
+    mon = Monitor(hist)
     rew  = LGBMRewardWrapper(hist, model_path="lgbm_model.pkl")
     return rew
 
 def main():
+    os.makedirs("logs", exist_ok=True)
+
     # 3) DummyVecEnv으로 병렬 환경(n_envs=4) 생성
     vec_env = DummyVecEnv([make_env for _ in range(4)])
 
@@ -144,11 +149,16 @@ def main():
         "MlpPolicy",
         vec_env,
         verbose=1,
-        tensorboard_log=None,
+        tensorboard_log="./logs/",
     )
 
     # 5) 학습 (200k timesteps)
-    model.learn(total_timesteps=200_000)
+    eval_env = Monitor(make_env())
+    eval_callback = EvalCallback(eval_env, best_model_save_path="./logs/best_model",
+                                 log_path="./logs/eval", eval_freq=10_000,
+                                 n_eval_episodes=5, deterministic=True)
+
+    model.learn(total_timesteps=200_000, callback=eval_callback)
     model.save("ppo_simglucose_hist_tree_adol2")
 
     # 6) 평가 (10 에피소드)

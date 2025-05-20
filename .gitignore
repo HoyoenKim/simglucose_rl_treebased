@@ -3,6 +3,7 @@ logs/
 ppo_simglucose_adol2/
 *.zip
 *.pkl
+!lgbm_model.pkl
 .idea/
 __pycahce__/
 *.pyc
