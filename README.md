@@ -1,4 +1,5 @@
 <h2>Reference</h2>
+
 - https://www.kaggle.com/competitions/brist1d/discussion/555236
 - https://github.com/scuya2050/brist1d_blood_glucose_prediction_competition
 - https://github.com/jxx123/simglucose
@@ -9,6 +10,7 @@
     $ pip install -r requirements.txt
 
 <h3>2. Preprocess kaggle data & train lightgbm model</h3>
+
 - follow data setup same as here:
 - https://github.com/scuya2050/brist1d_blood_glucose_prediction_competition
 
