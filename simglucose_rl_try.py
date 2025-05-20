@@ -18,6 +18,16 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import EvalCallback
 
+def continuous_reward(pred_bg: float,
+                      target: float = 125.0,
+                      sigma: float = 25.0) -> float:
+    """
+    Gaussian-shaped reward centered at `target`.
+    `sigma`가 작을수록 보상 곡선이 날카로워집니다.
+    반환값은 (0, 1] 범위입니다.
+    """
+    return float(np.exp(-0.5 * ((pred_bg - target) / sigma) ** 2))
+
 # 1) simglucose 환경 등록
 register(
     id="simglucose-adol2-v0",
@@ -127,7 +137,10 @@ class LGBMRewardWrapper(Wrapper):
         if isinstance(Xt, pd.DataFrame):
             Xt = Xt.astype(float)
 
-        new_reward = float(self.regressor.predict(Xt)[0])
+        pred_bg = float(self.regressor.predict(Xt)[0])
+        new_reward = continuous_reward(pred_bg,
+                                       target=125.0,  # 목표 혈당
+                                       sigma=25.0)  # 곡선 폭
         return obs, new_reward, terminated, truncated, info
 
 # 3) 서브환경 팩토리
