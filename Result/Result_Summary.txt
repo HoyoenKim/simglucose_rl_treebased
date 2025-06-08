@@ -16,7 +16,7 @@ Time-in-Range (%): 22.72
 LBGI (mean): 0.00
 HBGI (mean): 33.39
 
-PPO + RL
+PPO + LightGBM
 Eval 20 eps: -37.07 ± 0.00
 Time-in-Range (%): 60.76
 LBGI (mean): 41.45
