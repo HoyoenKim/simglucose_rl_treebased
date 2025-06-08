@@ -1,0 +1,23 @@
+SAC
+Eval 20 eps: -126.15 ± 0.00
+Time-in-Range (%): 23.30
+LBGI (mean): 0.00
+HBGI (mean): 33.12
+
+SAC + Risk Delta, Saftey filter
+Eval 20 eps: -156.98 ± 0.00
+Time-in-Range (%): 61.09
+LBGI (mean): 52.39
+HBGI (mean): 1.94
+
+PPO
+Eval 20 eps: -477.04 ± 0.00
+Time-in-Range (%): 22.72
+LBGI (mean): 0.00
+HBGI (mean): 33.39
+
+PPO + RL
+Eval 20 eps: -37.07 ± 0.00
+Time-in-Range (%): 60.76
+LBGI (mean): 41.45
+HBGI (mean): 2.73

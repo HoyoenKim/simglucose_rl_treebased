@@ -53,16 +53,16 @@ def continuous_reward(pred_bg: float, target: float = 125.0, sigma: float = 25.0
     # below target
     if delta < -sigma:
         if delta <= -2 * sigma:
-            return -10.0
+            return -100.0
         frac = (delta + 2 * sigma) / sigma
-        return -10.0 + frac * 20.0
+        return -100.0 + frac * 110.0
 
     # above target
     if delta > sigma:
         if delta >= 2 * sigma:
-            return -5.0
+            return -15.0
         frac = (delta - sigma) / sigma
-        return 10.0 - frac * 15.0
+        return 10.0 - frac * 25.0
 
     return 0.0
 
@@ -185,7 +185,19 @@ class LGBMRewardWrapper(Wrapper):
         Xt = self.transformer.transform(df)
         Xt = Xt.astype(float) if hasattr(Xt, "astype") else Xt
         pred = float(self.regressor.predict(Xt)[0])
-        reward = continuous_reward(pred, target=110.0, sigma=10.0)
+
+        # 예측 기반 보상
+        pred_reward = continuous_reward(pred, target=120.0, sigma=20.0)
+
+        # 실제 혈당 기반 페널티
+        actual_bg = info["bg"]
+        hypo_penalty = 0.0
+        if actual_bg < 70:
+            hypo_penalty = -50.0
+        elif actual_bg < 54:
+            hypo_penalty = -100.0
+
+        reward = pred_reward + hypo_penalty
         return obs, reward, done, trunc, info
 
 
