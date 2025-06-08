@@ -2,6 +2,9 @@ results/
 logs/
 ppo_simglucose_adol2/
 *.zip
+!ppo_simglucose_hist_tree_adol1.zip
+!ppo_simglucose_hist_tree_adol2.zip
+!logs.zip
 *.pkl
 !lgbm_model.pkl
 .idea/
