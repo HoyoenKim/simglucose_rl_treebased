@@ -10,6 +10,7 @@
     $ pip install -r requirements.txt
 
 <h3>2. Preprocess Kaggle Dataset & Train LightGBM model</h3>
+
 - Set up Kaggle Dataset and train LightGBM model details follow here:
 - https://github.com/scuya2050/brist1d_blood_glucose_prediction_competition
 
@@ -48,4 +49,5 @@
 > HBGI (mean): 4.61 <br>
 
 <h3>5. See the details of our study</h3>
+
 - Summary of our works at /doc
