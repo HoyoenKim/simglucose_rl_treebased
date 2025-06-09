@@ -1,339 +1,214 @@
 import os
 import pickle
-from collections import deque
-from typing import Any, Deque, Tuple, Dict
-
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import numpy as np
+from collections import deque
+
 import gymnasium as gym
-from gymnasium import Wrapper
 from gymnasium.envs.registration import register
+from gymnasium import Wrapper
+from gymnasium import RewardWrapper
+
+from simglucose.simulation.scenario import CustomScenario
+from datetime import datetime
+
 from stable_baselines3 import PPO
-from stable_baselines3.common.callbacks import (
-    BaseCallback,
-    EvalCallback,
-    ProgressBarCallback,
-)
+from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.callbacks import EvalCallback
 
-# =============================================================================
-# Constants & Hyperparameters
-# =============================================================================
-ENV_ID = "simglucose-adol2-v0"
-HISTORY_LENGTH = 12
-NUM_ENVS = 4
-TOTAL_TIMESTEPS = 100_000
-EVAL_FREQ = 10_000
-N_EVAL_EPISODES = 5
-MODEL_PATH = "lgbm_model.pkl"
-LOG_DIR = "./logs"
-BEST_MODEL_DIR = "./logs/best_model"
+# def continuous_reward(pred_bg: float,
+#                       target: float = 200.0,
+#                       sigma: float = 10.0) -> float:
+#     """
+#     Gaussian-shaped reward centered at `target`.
+#     `sigma`가 작을수록 보상 곡선이 날카로워집니다.
+#     반환값은 (0, 1] 범위입니다.
+#     """
+#     delta=20
+#     diff = abs(pred_bg - target)
+#     if diff <= delta:
+#         return 1 - (diff**2) / (2 * delta**2)
+#     else:
+#         return - (diff - delta) / delta
 
+# def continuous_reward(pred_bg, target=125, margin=40):
+#     diff = abs(pred_bg - target)
+#     if diff >= margin:
+#         return 0.0
+#     return np.cos((np.pi * diff) / (2 * margin))  # range: (0, 1]    
 
-# =============================================================================
-# Utility: Continuous Reward Function
-# =============================================================================
-def continuous_reward(pred_bg: float, target: float = 125.0, sigma: float = 25.0) -> float:
-    """
-    Compute reward based on deviation from target BG.
+def continuous_reward(pred_bg, target=125, scale=40):
+    return 1 / (1 + ((pred_bg - target) / scale) ** 2)
 
-    - |delta| <= sigma: +10
-    - delta < -sigma: linear interp from -10 at -2σ to +10 at -σ
-    - delta > +sigma: linear interp from +10 at +σ to -5 at +2σ
-    """
-    delta = pred_bg - target
+# def continuous_reward(pred_bg, target=125, steepness=0.1):
+#     return 1 / (1 + np.exp(steepness * abs(pred_bg - target)))
 
-    # within one sigma
-    if abs(delta) <= sigma:
-        return 10.0
+# def continuous_reward(pred_bg, target=125, scale=25, power=4):
+#     return 1 / (1 + ((pred_bg - target) / scale) ** power)
 
-    # below target
-    if delta < -sigma:
-        if delta <= -2 * sigma:
-            return -10.0
-        frac = (delta + 2 * sigma) / sigma
-        return -10.0 + frac * 20.0
+# 1) simglucose 환경 등록
+register(
+    id="simglucose-adol2-v0",
+    entry_point="simglucose.envs:T1DSimGymnaisumEnv",
+    max_episode_steps=200,  # 에피소드 최대 길이 (원하는 값으로 조정)
+    kwargs={
+        "patient_name": "adolescent#002",
+        # "custom_scenario": CustomScenario(start_time=datetime(2025,5,16), scenario=[(60,20)]),
+        # "reward_fun": custom_reward,  # 필요 시 사용자 정의 보상 함수
+    },
+)
 
-    # above target
-    if delta > sigma:
-        if delta >= 2 * sigma:
-            return -5.0
-        frac = (delta - sigma) / sigma
-        return 10.0 - frac * 15.0
-
-    return 0.0
-
-
-# =============================================================================
-# Callback: Log training episode rewards
-# =============================================================================
-class TrainRewardCallback(BaseCallback):
-    """
-    Record episode rewards during training and save a plot at end.
-    """
-    def __init__(self, verbose: int = 0):
-        super().__init__(verbose)
-        self.timesteps: list[int] = []
-        self.rewards: list[float] = []
-
-    def _on_step(self) -> bool:
-        infos = self.locals.get("infos", [])
-        for info in infos:
-            ep_info = info.get("episode")
-            if ep_info:
-                self.timesteps.append(self.num_timesteps)
-                self.rewards.append(ep_info["r"])
-        return True
-
-    def _on_training_end(self) -> None:
-        plt.figure()
-        plt.plot(self.timesteps, self.rewards)
-        plt.xlabel("Timestep")
-        plt.ylabel("Episode Reward")
-        plt.title("Training: Timestep vs Reward")
-        plt.tight_layout()
-        plt.savefig("train_reward.png")
-        plt.close()
-
-
-# =============================================================================
-# Wrapper: History of BG, meal, insulin
-# =============================================================================
+# 1) MultiHistoryWrapper: bg, meal, action 히스토리(12스텝) 생성
 class MultiHistoryWrapper(Wrapper):
-    """Maintain fixed-length history for BG, meal, insulin"""
-    def __init__(self, env: gym.Env, history_length: int = HISTORY_LENGTH):
+    def __init__(self, env, history_length: int = 12):
         super().__init__(env)
         self.history_length = history_length
-        self.bg_buf: Deque[float] = deque(maxlen=history_length)
-        self.meal_buf: Deque[float] = deque(maxlen=history_length)
-        self.insulin_buf: Deque[float] = deque(maxlen=history_length)
+        self.bg_buf      = deque(maxlen=history_length)
+        self.meal_buf    = deque(maxlen=history_length)
+        self.insulin_buf = deque(maxlen=history_length)
 
-    def reset(self, **kwargs) -> Tuple[Any, dict]:
+    def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        init_bg, init_meal = info["bg"], info["meal"]
+        # 초기값으로 버퍼 채우기
+        init_bg   = info["bg"]
+        init_meal = info["meal"]
+        init_ins  = 0.0  # reset 직후엔 action 없음 → 0
         for _ in range(self.history_length):
             self.bg_buf.append(init_bg)
             self.meal_buf.append(init_meal)
-            self.insulin_buf.append(0.0)
-        info.update(
-            hist_bg=np.array(self.bg_buf),
-            hist_meal=np.array(self.meal_buf),
-            hist_insulin=np.array(self.insulin_buf),
-        )
+            self.insulin_buf.append(init_ins)
+        # info 에 히스토리 추가
+        info["hist_bg"]      = np.array(self.bg_buf)       # shape=(12,)
+        info["hist_meal"]    = np.array(self.meal_buf)     # shape=(12,)
+        info["hist_insulin"] = np.array(self.insulin_buf)  # shape=(12,)
         return obs, info
 
-    def step(
-        self, action: Any
-    ) -> Tuple[Any, float, bool, bool, dict]:
-        obs, reward, done, trunc, info = self.env.step(action)
-        ins = float(np.array(action).ravel()[0]) if hasattr(action, "__iter__") else float(action)
+    def step(self, action):
+        # action 값도 히스토리에 기록
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        if isinstance(action, (np.ndarray, list, tuple)):
+            ins = float(np.array(action).ravel()[0])
+        else:
+            ins = float(action)
         self.bg_buf.append(info["bg"])
         self.meal_buf.append(info["meal"])
         self.insulin_buf.append(ins)
-        info.update(
-            hist_bg=np.array(self.bg_buf),
-            hist_meal=np.array(self.meal_buf),
-            hist_insulin=np.array(self.insulin_buf),
-        )
-        return obs, reward, done, trunc, info
+        info["hist_bg"]      = np.array(self.bg_buf)
+        info["hist_meal"]    = np.array(self.meal_buf)
+        info["hist_insulin"] = np.array(self.insulin_buf)
+        return obs, reward, terminated, truncated, info
 
-
-# =============================================================================
-# Wrapper: LightGBM pipeline reward
-# =============================================================================
+# 2) LightGBM 기반 보상 래퍼
 class LGBMRewardWrapper(Wrapper):
-    """Compute reward via pretrained Transformer+Regressor pipeline"""
-    def __init__(self, env: gym.Env, model_path: str = MODEL_PATH):
+    def __init__(self, env, model_path: str):
         super().__init__(env)
+        # 1) 파이프라인 전체(Transformer + Regressor) 로드
         with open(model_path, "rb") as f:
-            pipeline = pickle.load(f)
-        self.transformer = pipeline.named_steps["transform"]
-        self.regressor = pipeline.named_steps["regressor"]
+            self.pipeline = pickle.load(f)
+        # 2) Transformer와 Regressor 분리
+        self.transformer = self.pipeline.named_steps["transform"]
+        self.regressor   = self.pipeline.named_steps["regressor"]
+        self.bg_gap = 5
 
-    def step(
-        self, action: Any
-    ) -> Tuple[Any, float, bool, bool, dict]:
-        obs, _, done, trunc, info = self.env.step(action)
+    def step(self, action):
+        obs, _, terminated, truncated, info = self.env.step(action)
+
+        # —————————————— 1) 원본 X 배열 생성 ——————————————
+        p_num = "p02"
         t = info["time"]
         minutes = t.hour * 60 + t.minute
-        sin_t, cos_t = (
-            np.sin(2 * np.pi * minutes / 1440),
-            np.cos(2 * np.pi * minutes / 1440),
-        )
-        hist_bg = info["hist_bg"]
-        current_bg = float(info["bg"])
-        bg_lags = np.concatenate([[current_bg], hist_bg])
-        feat = np.concatenate([
-            ["p02"],
-            [5],
-            [sin_t, cos_t],
-            bg_lags,
-            np.diff(bg_lags),
-            info["hist_insulin"],
-            info["hist_meal"],
-        ])
-        df = pd.DataFrame(
-            feat.reshape(1, -1),
-            columns=self.transformer.feature_names_in_,
-        )
-        for col in df.columns:
-            if col != "p_num":
-                df[col] = df[col].astype(float)
-        Xt = self.transformer.transform(df)
-        Xt = Xt.astype(float) if hasattr(Xt, "astype") else Xt
-        pred = float(self.regressor.predict(Xt)[0])
+        sin_t = np.sin(2 * np.pi * minutes / 1440)
+        cos_t = np.cos(2 * np.pi * minutes / 1440)
 
-        # 예측 기반 보상
-        reward = continuous_reward(pred, target=110.0, sigma=10.0)
-        return obs, reward, done, trunc, info
+        hist_bg     = info["hist_bg"]
+        current_bg  = float(info["bg"])
+        bg_lags     = np.concatenate([[current_bg], hist_bg])  # (13,)
+        bg_diff     = np.diff(bg_lags)                         # (12,)
+        insulin_hist= info["hist_insulin"]                     # (12,)
+        carbs_hist  = info["hist_meal"]                        # (12,)
 
+        feat_arr = np.concatenate([
+            [p_num], [self.bg_gap], [sin_t], [cos_t],
+            bg_lags, bg_diff,
+            insulin_hist, carbs_hist
+        ]).reshape(1, -1)
 
-# =============================================================================
-# Environment Registration & Factory
-# =============================================================================
-def register_env() -> None:
-    register(
-        id=ENV_ID,
-        entry_point="simglucose.envs:T1DSimGymnaisumEnv",
-        max_episode_steps=200,
-        kwargs={"patient_name": "adolescent#002"},
-    )
+        # —————————————— 2) 원래 기대 피처명으로 DataFrame 생성 ——————————————
+        input_cols = list(self.transformer.feature_names_in_)
+        feat_df    = pd.DataFrame(feat_arr, columns=input_cols)
 
+        # 모든 행·열, 인덱스 없이 출력
+        # pd.set_option("display.max_rows", None)
+        # pd.set_option("display.max_columns", None)
+        # print(feat_df.to_string(index=False))
 
-def make_env() -> gym.Env:
-    env = gym.make(ENV_ID)
-    env = MultiHistoryWrapper(env)
-    env = Monitor(env)
-    env = LGBMRewardWrapper(env)
-    return env
+        # —————————————— 3) 숫자형 칼럼들 float 으로 캐스팅 ——————————————
+        #    (p_num 은 object, 나머지는 모두 float)
+        for c in feat_df.columns:
+            if c != "p_num":
+                feat_df[c] = feat_df[c].astype(float)
 
+        # —————————————— 4) 인코더 → 예측 ——————————————
+        Xt = self.transformer.transform(feat_df)
+        # transformer 출력도 object dtype 이 남아 있을 수 있으므로,
+        # Xt 가 DataFrame 이면 전체를 float 으로 바꿔줍니다
+        if isinstance(Xt, pd.DataFrame):
+            Xt = Xt.astype(float)
 
-# =============================================================================
-# Metrics & Evaluation
-# =============================================================================
-def compute_metrics_ppo(model: PPO, n_episodes: int = 20) -> Dict[str, float]:
-    tir_count = tir_total = 0
-    lbgi_list: list[float] = []
-    hbgi_list: list[float] = []
-    for ep in range(n_episodes):
-        env = make_env()
-        obs, info = env.reset(seed=ep)
-        lbgi_vals: list[float] = []
-        hbgi_vals: list[float] = []
-        done = False
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, _, term, trunc, info = env.step(action)
-            done = term or trunc
-            bg = info["bg"]
-            fbg = 1.509 * ((np.log(bg)) ** 1.084 - 5.381)
-            rbg = 10 * (fbg ** 2)
-            if fbg < 0:
-                lbgi_vals.append(rbg)
-            else:
-                hbgi_vals.append(rbg)
-            tir_total += 1
-            if 70 <= bg <= 180:
-                tir_count += 1
-        env.close()
-        lbgi_list.append(np.mean(lbgi_vals) if lbgi_vals else 0.0)
-        hbgi_list.append(np.mean(hbgi_vals) if hbgi_vals else 0.0)
-    return {
-        "Time-in-Range (%)": 100 * tir_count / tir_total if tir_total else 0.0,
-        "LBGI (mean)": float(np.mean(lbgi_list)),
-        "HBGI (mean)": float(np.mean(hbgi_list)),
-    }
+        pred_bg = float(self.regressor.predict(Xt)[0])
+        new_reward = continuous_reward(pred_bg, target=125, scale=5)
+        return obs, new_reward, terminated, truncated, info
 
+# 3) 서브환경 팩토리
+def make_env():
+    base = gym.make("simglucose-adol2-v0")
+    hist = MultiHistoryWrapper(base, history_length=12)
+    mon = Monitor(hist)
+    rew  = LGBMRewardWrapper(hist, model_path="lgbm_model.pkl")
+    return rew
 
-def evaluate_and_plot_ppo(
-    model: PPO, n_eval: int = 20, ep_len: int = 288
-) -> Dict[str, float]:
-    # 1) SB3 evaluate
-    eval_env = DummyVecEnv([make_env])
-    mean_r, std_r = evaluate_policy(
-        model, eval_env, n_eval, deterministic=True
-    )
-    print(f"Eval {n_eval} eps: {mean_r:.2f} ± {std_r:.2f}")
+def main():
+    os.makedirs("logs", exist_ok=True)
 
-    # 2) Custom metrics
-    metrics = compute_metrics_ppo(model, n_episodes=n_eval)
-    for name, value in metrics.items():
-        print(f"{name}: {value:.2f}")
+    # 3) DummyVecEnv으로 병렬 환경(n_envs=4) 생성
+    vec_env = DummyVecEnv([make_env for _ in range(4)])
 
-    # 3) Trajectory plot (single episode)
-    env = make_env()
-    obs, info = env.reset(seed=0)
-    bg_traj: list[float] = []
-    ins_traj: list[float] = []
-    for _ in range(ep_len):
-        action, _ = model.predict(obs, deterministic=True)
-        ins_traj.append(float(np.array(action).ravel()[0]))
-        bg_traj.append(info["bg"])
-        obs, _, term, trunc, info = env.step(action)
-        if term or trunc:
-            break
-    env.close()
-
-    plt.figure()
-    plt.plot(bg_traj, marker="o")
-    plt.title("BG Trajectory")
-    plt.xlabel("Timestep (5 min)")
-    plt.ylabel("BG (mg/dL)")
-    plt.tight_layout()
-    plt.savefig("eval_result_bg.png")
-    plt.close()
-
-    plt.figure()
-    plt.plot(ins_traj, marker="o")
-    plt.title("Insulin Trajectory")
-    plt.xlabel("Timestep (5 min)")
-    plt.ylabel("Insulin (IU)")
-    plt.tight_layout()
-    plt.savefig("eval_result_ins.png")
-    plt.close()
-
-    return metrics
-
-
-# =============================================================================
-# Main
-# =============================================================================
-def main() -> None:
-    os.makedirs(LOG_DIR, exist_ok=True)
-    register_env()
-
-    vec_env = DummyVecEnv([make_env for _ in range(NUM_ENVS)])
+    # 4) PPO 에이전트 초기화 (TensorBoard 생략)
     model = PPO(
         "MlpPolicy",
         vec_env,
         verbose=1,
-        tensorboard_log=LOG_DIR,
+        tensorboard_log="./logs/",
     )
 
-    # Callbacks
-    train_cb = TrainRewardCallback()
-    eval_cb = EvalCallback(
-        Monitor(make_env()),
-        best_model_save_path=BEST_MODEL_DIR,
-        log_path=LOG_DIR,
-        eval_freq=EVAL_FREQ,
-        n_eval_episodes=N_EVAL_EPISODES,
-        deterministic=True,
-    )
-    prog_cb = ProgressBarCallback()
+    # 5) 학습 (200k timesteps)
+    eval_env = Monitor(make_env())
+    eval_callback = EvalCallback(eval_env, best_model_save_path="./logs/best_model",
+                                 log_path="./logs/eval", eval_freq=200,
+                                 n_eval_episodes=5, deterministic=True)
 
-    model.learn(
-        total_timesteps=TOTAL_TIMESTEPS,
-        callback=[train_cb, eval_cb, prog_cb],
-    )
+    model.learn(total_timesteps=10_000, callback=eval_callback)
     model.save("ppo_simglucose_hist_tree_adol2")
 
-    # Post-training evaluation
-    evaluate_and_plot_ppo(model)
+    # 6) 평가 (10 에피소드)
+    mean_reward, std_reward = evaluate_policy(
+        model, vec_env, n_eval_episodes=10, render=False
+    )
+    print(f"[Evaluation] Mean reward: {mean_reward:.2f} ± {std_reward:.2f}")
 
+    # 7) 시연 (단일 env + Wrapper 체인)
+    single = make_env()
+    obs, info = single.reset(seed=123)
+    for t in range(200):
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = single.step(action)
+        single.render()
+        if terminated or truncated:
+            print(f"Demo finished at step {t+1}")
+            break
+    single.close()
 
 if __name__ == "__main__":
     main()
