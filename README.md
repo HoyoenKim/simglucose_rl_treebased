@@ -50,4 +50,5 @@
 
 <h3>5. See the details of our study</h3>
 
-- Summary of our works at /doc
+- Result of our works at /Result
+- Details of our works at /doc
