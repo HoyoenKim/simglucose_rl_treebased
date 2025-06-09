@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import gymnasium as gym
-from gymnasium import Wrapper
+from gymnasium import Wrapper, ActionWrapper
 from gymnasium.envs.registration import register
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
@@ -17,7 +17,12 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.utils import get_schedule_fn
+from stable_baselines3.common.policies import ActorCriticPolicy
+from torch.distributions import Beta
+import torch as th
+import torch.nn as nn
 
 # =============================================================================
 # Constants & Hyperparameters
@@ -48,21 +53,21 @@ def continuous_reward(pred_bg: float, target: float = 125.0, sigma: float = 25.0
 
     # within one sigma
     if abs(delta) <= sigma:
-        return 10.0
+        return 1.0
 
     # below target
     if delta < -sigma:
         if delta <= -2 * sigma:
-            return -10.0
+            return -5.0
         frac = (delta + 2 * sigma) / sigma
-        return -10.0 + frac * 20.0
+        return -5.0 + frac * 10.0
 
     # above target
     if delta > sigma:
         if delta >= 2 * sigma:
-            return -5.0
+            return -2.0
         frac = (delta - sigma) / sigma
-        return 10.0 - frac * 15.0
+        return -2.0 - frac * 5.0
 
     return 0.0
 
@@ -187,9 +192,41 @@ class LGBMRewardWrapper(Wrapper):
         pred = float(self.regressor.predict(Xt)[0])
 
         # 예측 기반 보상
-        reward = continuous_reward(pred, target=110.0, sigma=10.0)
+        reward = continuous_reward(pred, target=120.0, sigma=20.0)
         return obs, reward, done, trunc, info
 
+class SafetyFilter(ActionWrapper):
+    """
+    혈당이 cutoff 이하일 때 행동 스케일 조정
+    """
+    def __init__(
+        self,
+        env: gym.Env,
+        scale: float = 0.1,
+        cutoff: float = 80
+    ):
+        super().__init__(env)
+        self.scale = scale
+        self.cutoff = cutoff
+        self._last_info: dict = {}
+
+    def action(self, action: Any) -> Any:
+        bg = self._last_info.get("bg", None)
+        if bg is not None and bg < self.cutoff:
+            return np.asarray(action) * self.scale
+        return action
+
+    def step(self, action: Any) -> Tuple[Any, float, bool, bool, dict]:
+        obs, reward, done, truncated, info = self.env.step(action)
+        safe_action = self.action(action)
+        obs, reward, done, truncated, info = self.env.step(safe_action)
+        self._last_info = info
+        return obs, reward, done, truncated, info
+
+    def reset(self, **kwargs) -> Tuple[Any, dict]:
+        obs, info = self.env.reset(**kwargs)
+        self._last_info = info
+        return obs, info
 
 # =============================================================================
 # Environment Registration & Factory
@@ -206,8 +243,9 @@ def register_env() -> None:
 def make_env() -> gym.Env:
     env = gym.make(ENV_ID)
     env = MultiHistoryWrapper(env)
-    env = Monitor(env)
     env = LGBMRewardWrapper(env)
+    env = SafetyFilter(env)
+    env = Monitor(env)
     return env
 
 
@@ -220,7 +258,7 @@ def compute_metrics_ppo(model: PPO, n_episodes: int = 20) -> Dict[str, float]:
     hbgi_list: list[float] = []
     for ep in range(n_episodes):
         env = make_env()
-        obs, info = env.reset(seed=ep)
+        obs, info = env.reset(seed=42)
         lbgi_vals: list[float] = []
         hbgi_vals: list[float] = []
         done = False
@@ -265,7 +303,7 @@ def evaluate_and_plot_ppo(
 
     # 3) Trajectory plot (single episode)
     env = make_env()
-    obs, info = env.reset(seed=0)
+    obs, info = env.reset(seed=42)
     bg_traj: list[float] = []
     ins_traj: list[float] = []
     for _ in range(ep_len):
