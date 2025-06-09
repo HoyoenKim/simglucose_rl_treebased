@@ -11,8 +11,9 @@
 
 <h3>2. Preprocess kaggle data & train lightgbm model</h3>
 
-- follow data setup same as here:
+- follow data setup and train same as here:
 - https://github.com/scuya2050/brist1d_blood_glucose_prediction_competition
+- Place best model at ./lgbm_model.pkl
 
 <h3>3. Train RL model</h3>
 
@@ -23,3 +24,15 @@
     $ tensorboard --logdir ./logs
  
 - http://localhost:6006/#timeseries
+
+<h3>4. Evaluate RL model</h3>
+
+    $ python simglucose_rl_ev.py
+
+- eval_result_bg.png
+- eval_result_ins.png
+- terminal output
+> Eval 20 eps: -275.31 ± 0.00 <br>
+> Time-in-Range (%): 67.93 <br>
+> LBGI (mean): 28.39 <br>
+> HBGI (mean): 4.61 <br>

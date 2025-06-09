@@ -131,7 +131,7 @@ class MultiHistoryWrapper(Wrapper):
         return obs, info
 
     def step(
-        self, action: Any
+            self, action: Any
     ) -> Tuple[Any, float, bool, bool, dict]:
         obs, reward, done, trunc, info = self.env.step(action)
         ins = float(np.array(action).ravel()[0]) if hasattr(action, "__iter__") else float(action)
@@ -159,7 +159,7 @@ class LGBMRewardWrapper(Wrapper):
         self.regressor = pipeline.named_steps["regressor"]
 
     def step(
-        self, action: Any
+            self, action: Any
     ) -> Tuple[Any, float, bool, bool, dict]:
         obs, _, done, trunc, info = self.env.step(action)
         t = info["time"]
@@ -168,9 +168,12 @@ class LGBMRewardWrapper(Wrapper):
             np.sin(2 * np.pi * minutes / 1440),
             np.cos(2 * np.pi * minutes / 1440),
         )
-        hist_bg = info["hist_bg"]
+
         current_bg = float(info["bg"])
-        bg_lags = np.concatenate([[current_bg], hist_bg])
+        # 단위 변환 mmol/L -> mgd/L
+        hist_bg = info["hist_bg"] / 18
+        bg_lags = np.concatenate([[current_bg / 18], hist_bg])
+
         feat = np.concatenate([
             ["p02"],
             [5],
@@ -189,10 +192,11 @@ class LGBMRewardWrapper(Wrapper):
                 df[col] = df[col].astype(float)
         Xt = self.transformer.transform(df)
         Xt = Xt.astype(float) if hasattr(Xt, "astype") else Xt
-        pred = float(self.regressor.predict(Xt)[0])
 
-        # 예측 기반 보상
+        # 단위 변환 mmol/L <- mgd/L
+        pred = float(self.regressor.predict(Xt)[0]) * 18
         reward = continuous_reward(pred, target=120.0, sigma=20.0)
+        #print(pred, reward)
         return obs, reward, done, trunc, info
 
 class SafetyFilter(ActionWrapper):
@@ -200,24 +204,26 @@ class SafetyFilter(ActionWrapper):
     혈당이 cutoff 이하일 때 행동 스케일 조정
     """
     def __init__(
-        self,
-        env: gym.Env,
-        scale: float = 0.1,
-        cutoff: float = 80
+            self,
+            env: gym.Env,
+            scale: float = 0.1,
+            cutoff: float = 80
     ):
         super().__init__(env)
         self.scale = scale
         self.cutoff = cutoff
-        self._last_info: dict = {}
+        self._last_info: Dict[str, Any] = {}
 
     def action(self, action: Any) -> Any:
         bg = self._last_info.get("bg", None)
         if bg is not None and bg < self.cutoff:
-            return np.asarray(action) * self.scale
+            modified_action = np.asarray(action) * self.scale
+            if isinstance(self.action_space, gym.spaces.Box):
+                modified_action = np.clip(modified_action, self.action_space.low, self.action_space.high)
+            return modified_action
         return action
 
     def step(self, action: Any) -> Tuple[Any, float, bool, bool, dict]:
-        obs, reward, done, truncated, info = self.env.step(action)
         safe_action = self.action(action)
         obs, reward, done, truncated, info = self.env.step(safe_action)
         self._last_info = info
@@ -227,6 +233,56 @@ class SafetyFilter(ActionWrapper):
         obs, info = self.env.reset(**kwargs)
         self._last_info = info
         return obs, info
+
+# =============================================================================
+# Custom Beta Distribution Policy for PPO
+# =============================================================================
+from torch.nn import functional as F
+class CustomBetaPolicy(ActorCriticPolicy):
+    def __init__(self, observation_space: gym.spaces.Space, action_space: gym.spaces.Space, lr_schedule, **kwargs):
+        super().__init__(observation_space, action_space, lr_schedule, **kwargs)
+
+        if not isinstance(self.action_space, gym.spaces.Box) or self.action_space.shape != (1,):
+            raise ValueError("CustomBetaPolicy is designed for a single continuous action (insulin dose).")
+
+        # Re-define the action_net to output 2 parameters (alpha, beta) for the Beta distribution.
+        # The output dimension is 2 * action_dimension (which is 1 here)
+        self.param_net = nn.Linear(self.mlp_extractor.latent_dim_pi, 2)
+
+    def _get_dist(self, latent_pi: th.Tensor) -> th.distributions.Distribution:
+        raw = self.param_net(latent_pi)  # shape (batch, 2)
+        alpha = F.softplus(raw[:, 0]) + 1.0  # shape (batch,)
+        beta = F.softplus(raw[:, 1]) + 1.0  # shape (batch,)
+        # (batch,) → (batch,1)
+        alpha = alpha.unsqueeze(-1)
+        beta = beta.unsqueeze(-1)
+        return Beta(alpha, beta)
+
+    def _get_action_dist_from_values(
+            self,
+            action_log_probs: th.Tensor,
+            value: th.Tensor,
+            latent_pi: th.Tensor,
+            latent_vf: th.Tensor,
+    ) -> Tuple[th.distributions.Distribution, th.Tensor, th.Tensor]:
+        """
+        Creates a Beta distribution for the policy's action.
+        """
+        raw_params = self.action_net(latent_pi)
+
+        alpha = th.nn.functional.softplus(raw_params[:, 0]) + 1.0
+        beta = th.nn.functional.softplus(raw_params[:, 1]) + 1.0
+
+        # Ensure alpha and beta have the correct shape (batch_size, 1) if action_space.shape is (1,)
+        # PyTorch Beta distribution can accept (batch_size,) for parameters if action_dim is 1,
+        # but Stable-Baselines3's internal handling expects the sampled action to be (batch_size, action_dim).
+        # We need to explicitly make alpha and beta (batch_size, 1) if action_dim is 1.
+        alpha = alpha.unsqueeze(-1)  # Shape becomes (batch_size, 1)
+        beta = beta.unsqueeze(-1)  # Shape becomes (batch_size, 1)
+
+        dist = Beta(alpha, beta)
+
+        return dist, value, None
 
 # =============================================================================
 # Environment Registration & Factory
@@ -257,16 +313,23 @@ def compute_metrics_ppo(model: PPO, n_episodes: int = 20) -> Dict[str, float]:
     lbgi_list: list[float] = []
     hbgi_list: list[float] = []
     for ep in range(n_episodes):
-        env = make_env()
-        obs, info = env.reset(seed=42)
+        eval_env = make_env()
+        obs, info = eval_env.reset(seed=42 + ep)
+
         lbgi_vals: list[float] = []
         hbgi_vals: list[float] = []
         done = False
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
-            obs, _, term, trunc, info = env.step(action)
+            action, _states = model.predict(obs, deterministic=True)
+
+            if isinstance(action, np.ndarray) and action.size == 1:
+                action = action.item()
+
+            obs, _, term, trunc, info = eval_env.step(action)
             done = term or trunc
             bg = info["bg"]
+            if isinstance(bg, np.ndarray):
+                bg = float(bg.item())
             fbg = 1.509 * ((np.log(bg)) ** 1.084 - 5.381)
             rbg = 10 * (fbg ** 2)
             if fbg < 0:
@@ -276,38 +339,38 @@ def compute_metrics_ppo(model: PPO, n_episodes: int = 20) -> Dict[str, float]:
             tir_total += 1
             if 70 <= bg <= 180:
                 tir_count += 1
-        env.close()
+        eval_env.close()
+
         lbgi_list.append(np.mean(lbgi_vals) if lbgi_vals else 0.0)
         hbgi_list.append(np.mean(hbgi_vals) if hbgi_vals else 0.0)
+    mean_lbgi = float(np.mean(lbgi_list)) if lbgi_list else 0.0
+    mean_hbgi = float(np.mean(hbgi_list)) if hbgi_list else 0.0
     return {
         "Time-in-Range (%)": 100 * tir_count / tir_total if tir_total else 0.0,
-        "LBGI (mean)": float(np.mean(lbgi_list)),
-        "HBGI (mean)": float(np.mean(hbgi_list)),
+        "LBGI (mean)": mean_lbgi,
+        "HBGI (mean)": mean_hbgi,
     }
 
 
 def evaluate_and_plot_ppo(
-    model: PPO, n_eval: int = 20, ep_len: int = 288
+        model: PPO, n_eval: int = 20, ep_len: int = 288
 ) -> Dict[str, float]:
-    # 1) SB3 evaluate
     eval_env = DummyVecEnv([make_env])
     mean_r, std_r = evaluate_policy(
-        model, eval_env, n_eval, deterministic=True
+        model, eval_env, n_eval, deterministic=True, render=False
     )
     print(f"Eval {n_eval} eps: {mean_r:.2f} ± {std_r:.2f}")
 
-    # 2) Custom metrics
     metrics = compute_metrics_ppo(model, n_episodes=n_eval)
     for name, value in metrics.items():
         print(f"{name}: {value:.2f}")
 
-    # 3) Trajectory plot (single episode)
     env = make_env()
     obs, info = env.reset(seed=42)
     bg_traj: list[float] = []
     ins_traj: list[float] = []
     for _ in range(ep_len):
-        action, _ = model.predict(obs, deterministic=True)
+        action, _states = model.predict(obs, deterministic=True)
         ins_traj.append(float(np.array(action).ravel()[0]))
         bg_traj.append(info["bg"])
         obs, _, term, trunc, info = env.step(action)
@@ -316,19 +379,21 @@ def evaluate_and_plot_ppo(
     env.close()
 
     plt.figure()
-    plt.plot(bg_traj, marker="o")
+    plt.plot(bg_traj, marker="o", linestyle='-')
     plt.title("BG Trajectory")
     plt.xlabel("Timestep (5 min)")
     plt.ylabel("BG (mg/dL)")
+    plt.grid(True)
     plt.tight_layout()
     plt.savefig("eval_result_bg.png")
     plt.close()
 
     plt.figure()
-    plt.plot(ins_traj, marker="o")
+    plt.plot(ins_traj, marker="o", linestyle='-')
     plt.title("Insulin Trajectory")
     plt.xlabel("Timestep (5 min)")
     plt.ylabel("Insulin (IU)")
+    plt.grid(True)
     plt.tight_layout()
     plt.savefig("eval_result_ins.png")
     plt.close()
@@ -341,36 +406,61 @@ def evaluate_and_plot_ppo(
 # =============================================================================
 def main() -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
+    os.makedirs(BEST_MODEL_DIR, exist_ok=True)
     register_env()
 
     vec_env = DummyVecEnv([make_env for _ in range(NUM_ENVS)])
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=False, clip_obs=10.)
     model = PPO(
-        "MlpPolicy",
+        CustomBetaPolicy,
         vec_env,
         verbose=1,
         tensorboard_log=LOG_DIR,
+        gamma=0.99,
+        gae_lambda=0.95,
+        n_steps=2048,
+        ent_coef=0.01,
+        clip_range=0.2,
     )
 
-    # Callbacks
     train_cb = TrainRewardCallback()
+    prog_cb = ProgressBarCallback()
+
+    eval_vec = DummyVecEnv([make_env])
+    eval_vec = VecNormalize(eval_vec, norm_obs=True, norm_reward=False, clip_obs=10.)
+    eval_vec.obs_rms = vec_env.obs_rms
+    eval_vec.ret_rms = vec_env.ret_rms
+    eval_vec.training = False
     eval_cb = EvalCallback(
-        Monitor(make_env()),
+        eval_vec,
         best_model_save_path=BEST_MODEL_DIR,
         log_path=LOG_DIR,
-        eval_freq=EVAL_FREQ,
+        eval_freq=EVAL_FREQ // NUM_ENVS,
         n_eval_episodes=N_EVAL_EPISODES,
         deterministic=True,
+        render=False,
     )
-    prog_cb = ProgressBarCallback()
 
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,
         callback=[train_cb, eval_cb, prog_cb],
+        reset_num_timesteps=True,
     )
     model.save("ppo_simglucose_hist_tree_adol2")
 
-    # Post-training evaluation
-    evaluate_and_plot_ppo(model)
+    best_model_path = os.path.join(BEST_MODEL_DIR, "best_model")
+    if os.path.exists(f"{best_model_path}.zip"):
+        print(f"Loading best model from {best_model_path}.zip")
+
+        eval_vec_env_for_loading = DummyVecEnv([make_env])
+        eval_vec_env_for_loading = VecNormalize(eval_vec_env_for_loading, norm_obs=True, norm_reward=False,
+                                                clip_obs=10.)
+
+        loaded_model = PPO.load(best_model_path, env=eval_vec_env_for_loading)
+        evaluate_and_plot_ppo(loaded_model)
+    else:
+        print("No best model found. Evaluating the last trained model.")
+        evaluate_and_plot_ppo(model)
 
 
 if __name__ == "__main__":

@@ -21,3 +21,9 @@ Eval 20 eps: -37.07 ± 0.00
 Time-in-Range (%): 60.76
 LBGI (mean): 41.45
 HBGI (mean): 2.73
+
+PPO + LightGBM + Custom Reward
+Eval 20 eps: -275.31 ± 0.00
+Time-in-Range (%): 67.93
+LBGI (mean): 28.39
+HBGI (mean): 4.61
