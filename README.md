@@ -194,6 +194,5 @@ python simglucose_rl_ev.py
 
 * **Transformer-based predictor** pre-trained on simulator data
 * **Dual-PPO** controller (leveraging Beta policy & advanced stabilization tricks)
-* **Sim-to-real transfer** via domain randomization on simulator
 
 ---
