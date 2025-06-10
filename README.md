@@ -162,9 +162,11 @@ python simglucose_rl_ev.py
 #### 4.2 BG & Insulin Trajectories
 
 ![BG Trajectory](./Result/Figure/PPO_LGBM_reward_result_bg.png)
+
 *Fig 4. Future BG vs. time under PPO + LGBM + custom reward*
 
 ![Insulin Trajectory](./Result/Figure/PPO_LGBM_reward_result_ins.png)
+
 *Fig 5. Administered insulin over time*
 
 ---
