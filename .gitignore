@@ -16,3 +16,4 @@ model/
 tmp/
 eval_result_bg.png
 eval_result_ins.png
+train_reward.png

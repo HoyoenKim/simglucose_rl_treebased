@@ -130,7 +130,7 @@ Place the resulting model file here:
      * Custom continuous reward (penalize hypo/hyper)
 
 ```
-python simglucose_rl_try.py  # trains PPO + LightGBM agent
+python simglucose_ppo_lgbm.py train
 ```
 
 *Baseline SAC agent training and analysis available in `baseline.ipynb`.*
@@ -146,7 +146,7 @@ tensorboard --logdir ./logs
 ### 4. Evaluate & Visualize
 
 ```
-python simglucose_rl_ev.py
+python simglucose_ppo_lgbm.py eval --episodes 20 
 ```
 
 #### 4.1 Key Metrics (20 episodes)
@@ -161,6 +161,7 @@ python simglucose_rl_ev.py
 
 #### 4.2 BG & Insulin Trajectories
 
+- Since simulator has randomness, the figure will be changed for each simulation.
 ![BG Trajectory](./Result/Figure/PPO_LGBM_reward_result_bg.png)
 
 *Fig 4. Future BG vs. time under PPO + LGBM + custom reward*
@@ -175,19 +176,14 @@ python simglucose_rl_ev.py
 
 ```
 .
-├── prepare_data.py               # Kaggle dataset preprocessing script
-├── train.py                      # LightGBM training script
-├── lgbm_model.pkl                # trained LightGBM model
-├── baseline.ipynb                # SAC & PPO baseline agent notebook
-├── simglucose_rl_try.py          # PPO + LightGBM training script
-├── simglucose_rl_ev.py           # RL evaluation & metrics script
-├── Result/                       # saved results
-│   └── Figure/
-│       ├── PPO_LGBM_reward_result_bg.png
-│       └── PPO_LGBM_reward_result_ins.png
-│   └── PPOModel/                  # PPO + LGBM model
-│       └── ppo_simglucose_hist_tree_adol2_final.zip  
-└── requirements.txt               # Python dependencies
+├── prepare_data.py                    # Kaggle dataset preprocessing script
+├── train.py                           # LightGBM training script
+├── lgbm_model.pkl                     # trained LightGBM model
+├── baseline.ipynb                     # SAC & PPO baseline agent notebook
+├── simglucose_ppo_lgbm.py             # PPO + LightGBM training & evaluation script
+├── ppo_simglucose_hist_tree_adol2.zip # PPO Model
+├── Result/                            # archive results
+└── requirements.txt                   # Python dependencies
 ```
 
 ---
