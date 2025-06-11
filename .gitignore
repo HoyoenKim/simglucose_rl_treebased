@@ -13,3 +13,6 @@ __pycahce__/
 data/
 hyperparameter_tuning/
 model/
+tmp/
+eval_result_bg.png
+eval_result_ins.png
