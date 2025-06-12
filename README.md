@@ -124,7 +124,7 @@ Place the resulting model file here:
      * Risk-delta reward
      * Rule-based action filter
 
-  2. **PPO + LightGBM** (in `simglucose_rl_try.py`)
+  2. **PPO + LightGBM** (in `simglucose_ppo_lgbm.py`)
 
      * LightGBM predictor in the loop
      * Custom continuous reward (penalize hypo/hyper)
