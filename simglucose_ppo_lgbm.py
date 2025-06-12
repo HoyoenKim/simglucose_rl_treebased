@@ -47,7 +47,7 @@ EPISODE_STEPS: int = 288            # 24h × (60/5)=288
 
 # Training / evaluation
 NUM_ENVS: int = 4
-TOTAL_TIMESTEPS: int = 1_152_000     # 4000 episodes ≈ 4years simulated time
+TOTAL_TIMESTEPS: int = 2_304_000     # 8000 episodes
 EVAL_FREQ: int = 144_000            # evaluate every 500 episodes
 N_EVAL_EPISODES: int = 5
 SEED: int = 42
@@ -66,7 +66,7 @@ BG_TARGET: float = 125.0  # mg/dL
 BG_SIGMA: float = 25.0    # Reward width parameter
 
 # ───────────────────────────────────────────
-# 1. Reward utility
+# 1.Reward utility
 # ───────────────────────────────────────────
 
 def continuous_reward(pred_bg: float, *, target: float = BG_TARGET, sigma: float = BG_SIGMA) -> float:
@@ -354,6 +354,7 @@ def train_rl_agent() -> None:
     vec_env.seed(SEED)
 
     # 2.Load existing checkpoint if present
+    reset_num_timesteps = True
     if MODEL_CKPT.exists():
         print("[INFO] Continuing from existing checkpoint…")
         model = PPO.load(MODEL_CKPT, env=vec_env)
@@ -364,6 +365,7 @@ def train_rl_agent() -> None:
                 action, _ = model.predict(obs, deterministic=True)
                 obs, _, _, _ = vec_env.step(action)
             print("[INFO] Warming up vector env end... Start training")
+            reset_num_timesteps = False
     else:
         model = PPO(
             policy=CustomBetaPolicy,
@@ -400,7 +402,7 @@ def train_rl_agent() -> None:
     ]
 
     # 4.Learn
-    model.learn(total_timesteps=TOTAL_TIMESTEPS, reset_num_timesteps=False, callback=callbacks)
+    model.learn(total_timesteps=TOTAL_TIMESTEPS, reset_num_timesteps=reset_num_timesteps, callback=callbacks)
 
     # 5.Persist artefacts
     print("[INFO] Saving checkpoint →", MODEL_CKPT)
