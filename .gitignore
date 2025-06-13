@@ -1,7 +1,6 @@
 .idea/
 __pycahce__/
 results/
-logs/
 ppo_simglucose_adol2/
 hyperparameter_tuning/
 model/
@@ -15,6 +14,8 @@ tmp/
 !logs.zip
 *.pkl
 !lgbm_model.pkl
+!vec_normalize_stats.pkl
 eval_result_bg.png
 eval_result_ins.png
 train_reward.png
+*.npz
