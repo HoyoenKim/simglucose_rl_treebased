@@ -36,6 +36,12 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 
 ## 🗄️ Data Preparation & LightGBM Model
 
+### 0. Download Kaggle Dataset
+* Download 'BrisT1D Blood Glucose Prediction Competition' dataset.
+  * https://www.kaggle.com/competitions/brist1d/data
+
+* Place them at ./data/raw.
+
 ### 1. Preprocess Kaggle BRIST1D Dataset
 
 ```
@@ -73,7 +79,7 @@ python train.py
 Place the resulting model file here:
 
 ```
-./lgbm_model.pkl
+cp ./model/lgbm_gap_1_prior_12_addition_0_model_standard.pkl ./lgbm_model.pkl
 ```
 
 ---
