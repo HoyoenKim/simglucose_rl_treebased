@@ -53,12 +53,14 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 
 ```
 .
+├── data/                              # Kaggle dataset
 ├── prepare_data.py                    # Kaggle dataset preprocessing script
 ├── train.py                           # LightGBM training script
 ├── lgbm_model.pkl                     # trained LightGBM model
 ├── baseline.ipynb                     # SAC & PPO baseline agent notebook
 ├── simglucose_ppo_lgbm.py             # PPO + LightGBM training & evaluation script
 ├── ppo_simglucose_hist_tree_adol2.zip # PPO Model
+├── logs/                              # PPO Model train logs
 ├── Result/                            # archive results
 ├── doc/                               # midterm, final PPT
 └── requirements.txt                   # Python dependencies
