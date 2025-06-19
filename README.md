@@ -44,8 +44,7 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 * Kaggle BRIST1D 1st Solution: [https://www.kaggle.com/competitions/brist1d/discussion/555236](https://www.kaggle.com/competitions/brist1d/discussion/555236)
 * BRIST1D 1st Solution Repo: [https://github.com/scuya2050/brist1d\_blood\_glucose\_prediction\_competition](https://github.com/scuya2050/brist1d_blood_glucose_prediction_competition)
 * Sim-glucose Gym Env: [https://github.com/jxx123/simglucose](https://github.com/jxx123/simglucose)
-* Dual PPO (SOTA controller):
-  PLOS One “Blood glucose regulation … time in range (TIR)”, 2025
+* PPO controller, “A safe-enhanced fully closed-loop artificial pancreas controller based on deep reinforcement learning”, 2025:
   [https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0317662](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0317662)
 
 ---
@@ -200,7 +199,7 @@ python simglucose_ppo_lgbm.py eval --episodes 20
 
 ## 🚀 Future Work
 
-* **Transformer-based predictor** pre-trained on simulator data
-* **Dual-PPO** controller (leveraging Beta policy & advanced stabilization tricks)
+* Apply **Transformer-based predictor**: pre-trained on simulator data
+* Apply **Advanced PPO controller**: leveraging Beta policy & advanced stabilization tricks
 
 ---
