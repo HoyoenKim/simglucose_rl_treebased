@@ -4,6 +4,41 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 
 ---
 
+## 🧠 Model Overview
+
+### LightGBM Regressor
+![LGBM_model2](./Result/Figure/LGBM_model2.png)
+*Fig1. LightGBM model architecture*
+
+* Learns to predict future BG using tabular features from the last hour of CGM, insulin, meals, and wearable sensor data (heart rate, steps, calories).
+* **Algorithm**: Gradient boosting with decision trees (`LGBMRegressor`).
+* **Objective**: Minimize RMSE on held-out time-series folds (expanding-window CV).
+
+![LGBM_model1](./Result/Figure/LGBM_model1.png)
+*Fig2. LightGBM model inference BG+1:00*
+
+* **Inference loop**: At each timestep, the RL agent queries the predictor to estimate BG\_{t+1} given current state.
+
+### SAC & PPO Agent
+
+![RL_model](./Result/Figure/RL_model.png)
+*Fig3. SAC & PPO RL model architecture*
+
+#### SAC Baseline Agent
+
+* Off-policy actor-critic algorithm that maximizes expected reward minus an entropy regularization term.
+* **Reward**: Risk-delta (difference in LBGI/HBGI indices) with heavy penalties for hypo (<70 mg/dL) and hyper (>180 mg/dL) events.
+* **Filter**: Rule-based safety filter blocks excessive insulin when BG drops below threshold.
+
+#### PPO + LightGBM Agent
+
+* On-policy proximal policy optimization wrapped around a Beta action distribution for continuous insulin dosing.
+* **Integrated Predictor**: LightGBM BG forecast feeds into the PPO reward and decision logic.
+* **Reward**: Custom continuous function penalizing deviations from target 125 mg/dL, scaled at ±σ and multiplied beyond ±2σ.
+* **Policy**: MLP policy outputs insulin dose in \[0,1] normalized units.
+
+---
+
 ## 🔗 References
 
 * Kaggle BRIST1D 1st Solution: [https://www.kaggle.com/competitions/brist1d/discussion/555236](https://www.kaggle.com/competitions/brist1d/discussion/555236)
@@ -12,6 +47,23 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 * Dual PPO (SOTA controller):
   PLOS One “Blood glucose regulation … time in range (TIR)”, 2025
   [https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0317662](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0317662)
+
+---
+
+## 📂 Repository Structure
+
+```
+.
+├── prepare_data.py                    # Kaggle dataset preprocessing script
+├── train.py                           # LightGBM training script
+├── lgbm_model.pkl                     # trained LightGBM model
+├── baseline.ipynb                     # SAC & PPO baseline agent notebook
+├── simglucose_ppo_lgbm.py             # PPO + LightGBM training & evaluation script
+├── ppo_simglucose_hist_tree_adol2.zip # PPO Model
+├── Result/                            # archive results
+├── doc/                               # midterm, final PPT
+└── requirements.txt                   # Python dependencies
+```
 
 ---
 
@@ -27,10 +79,12 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 
 3. Make sure you have the following files in place:
 
-   * `figure/` folder (images used in README)
    * `prepare_data.py`, `train.py`
-   * `simglucose_rl_try.py`, `baseline.ipynb`, `simglucose_rl_ev.py`
+   * `simglucose_ppo_lgbm.py`, `baseline.ipynb`
    * `lgbm_model.pkl` (trained LightGBM regressor)
+   * `ppo_simglucose_hist_tree_adol2.zip` (trained PPO agent)
+
+4. Python 3.12+ is required.
 
 ---
 
@@ -76,46 +130,11 @@ python train.py
 * **Validation**: TabularExpandingWindowCV (time-aware CV)
 * **Metric**: RMSE
 
-Place the resulting model file here:
-
+### 3. Optional: Place the resulting model file
+* Already included in the project.
 ```
 cp ./model/lgbm_gap_1_prior_12_addition_0_model_standard.pkl ./lgbm_model.pkl
 ```
-
----
-
-## 🧠 Model Overview
-
-### LightGBM Regressor
-![LGBM_model2](./Result/Figure/LGBM_model2.png)
-*Fig1. LightGBM model architecture*
-
-* Learns to predict future BG using tabular features from the last hour of CGM, insulin, meals, and wearable sensor data (heart rate, steps, calories).
-* **Algorithm**: Gradient boosting with decision trees (`LGBMRegressor`).
-* **Objective**: Minimize RMSE on held-out time-series folds (expanding-window CV).
-
-![LGBM_model1](./Result/Figure/LGBM_model1.png)
-*Fig2. LightGBM model inference BG+1:00*
-
-* **Inference loop**: At each timestep, the RL agent queries the predictor to estimate BG\_{t+1} given current state.
-
-### SAC & PPO Agent
-
-![RL_model](./Result/Figure/RL_model.png)
-*Fig3. SAC & PPO RL model architecture*
-
-#### SAC Baseline Agent
-
-* Off-policy actor-critic algorithm that maximizes expected reward minus an entropy regularization term.
-* **Reward**: Risk-delta (difference in LBGI/HBGI indices) with heavy penalties for hypo (<70 mg/dL) and hyper (>180 mg/dL) events.
-* **Filter**: Rule-based safety filter blocks excessive insulin when BG drops below threshold.
-
-#### PPO + LightGBM Agent
-
-* On-policy proximal policy optimization wrapped around a Beta action distribution for continuous insulin dosing.
-* **Integrated Predictor**: LightGBM BG forecast feeds into the PPO reward and decision logic.
-* **Reward**: Custom continuous function penalizing deviations from target 125 mg/dL, scaled at ±σ and multiplied beyond ±2σ.
-* **Policy**: MLP policy outputs insulin dose in \[0,1] normalized units.
 
 ---
 
@@ -168,6 +187,7 @@ python simglucose_ppo_lgbm.py eval --episodes 20
 #### 4.2 BG & Insulin Trajectories
 
 - Since simulator has randomness, the figure will be changed for each simulation.
+
 ![BG Trajectory](./Result/Figure/PPO_LGBM_reward_result_bg.png)
 
 *Fig 4. Future BG vs. time under PPO + LGBM + custom reward*
@@ -175,22 +195,6 @@ python simglucose_ppo_lgbm.py eval --episodes 20
 ![Insulin Trajectory](./Result/Figure/PPO_LGBM_reward_result_ins.png)
 
 *Fig 5. Administered insulin over time*
-
----
-
-## 📂 Repository Structure
-
-```
-.
-├── prepare_data.py                    # Kaggle dataset preprocessing script
-├── train.py                           # LightGBM training script
-├── lgbm_model.pkl                     # trained LightGBM model
-├── baseline.ipynb                     # SAC & PPO baseline agent notebook
-├── simglucose_ppo_lgbm.py             # PPO + LightGBM training & evaluation script
-├── ppo_simglucose_hist_tree_adol2.zip # PPO Model
-├── Result/                            # archive results
-└── requirements.txt                   # Python dependencies
-```
 
 ---
 
