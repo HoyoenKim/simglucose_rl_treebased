@@ -6,6 +6,7 @@ from __future__ import annotations
 # ───────────────────────────────────────────
 import argparse
 import math
+import os
 import pickle
 from collections import deque
 from datetime import datetime
@@ -46,24 +47,36 @@ HISTORY_LENGTH: int = 12            # 1h history (12×5min)
 EPISODE_STEPS: int = 288            # 24h × (60/5)=288
 
 # Training / evaluation
-NUM_ENVS: int = 4
-TOTAL_TIMESTEPS: int = 2_304_000     # 8000 episodes
+NUM_ENVS: int = int(os.environ.get("SIMGLU_ENVS", 4))
+TOTAL_TIMESTEPS: int = int(os.environ.get("SIMGLU_STEPS", 2_304_000))  # 8000 eps (override for smoke)
 EVAL_FREQ: int = 144_000            # evaluate every 500 episodes
 N_EVAL_EPISODES: int = 5
 SEED: int = 42
 WARM_UP_STEPS : int = 20_000
 
+# ── Bug-fix toggle ────────────────────────────────────────────────
+# SIMGLU_FIX=1 (default): corrected LightGBM feature ordering + predicted BG
+# actually fed to the policy observation.  SIMGLU_FIX=0: original (buggy)
+# behaviour, kept so both can be A/B-compared at an equal training budget.
+FIX: bool = os.environ.get("SIMGLU_FIX", "1") != "0"
+TAG: str = os.environ.get("SIMGLU_TAG", "")          # keep A/B artefacts apart
+_suffix = f"_{TAG}" if TAG else ""
+
 # Paths
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
-BEST_MODEL_DIR = LOG_DIR / "best_model"
-MODEL_CKPT = BASE_DIR / "ppo_simglucose_hist_tree_adol2.zip"
-VEC_NORM_STATS = BASE_DIR / "vec_normalize_stats.pkl"
+BEST_MODEL_DIR = LOG_DIR / f"best_model{_suffix}"
+MODEL_CKPT = BASE_DIR / f"ppo_simglucose_hist_tree_adol2{_suffix}.zip"
+VEC_NORM_STATS = BASE_DIR / f"vec_normalize_stats{_suffix}.pkl"
 LGBM_MODEL = BASE_DIR / "lgbm_model.pkl"  # transformer+ LightGBM pipeline
 
 # Misc.
 BG_TARGET: float = 125.0  # mg/dL
 BG_SIGMA: float = 25.0    # Reward width parameter
+# Reward shaping actually used by LGBMRewardWrapper. Kept explicit to remove the
+# old doc/code drift (call site used 140/30 while constants claimed 125/25).
+REWARD_TARGET: float = 140.0  # mg/dL
+REWARD_SIGMA: float = 30.0
 
 # ───────────────────────────────────────────
 # 1.Reward utility
@@ -147,6 +160,34 @@ class LGBMRewardWrapper(gym.Wrapper):
         info.update(sin_t=0.0, cos_t=0.0, pred_bg60=float(info.get("bg", 100.0)))
         return obs, info
 
+    def _build_feature_row(self, current_bg, sin_t, cos_t, info):
+        """Assemble the 1-row DataFrame in the exact column order the saved
+        LightGBM pipeline expects. FIX corrects the time ordering: the model
+        wants newest-first (bg_0_lag = now ... bg_60_lag = 60 min ago), but the
+        original code fed oldest-first with a duplicated 'now'."""
+        cols = self._transform.feature_names_in_
+        if FIX:
+            bg_hist = np.asarray(info["hist_bg"], dtype=float) / 18.0182   # oldest->newest (12)
+            bg_rev = bg_hist[::-1]                                          # newest->oldest
+            bg_lag = np.concatenate([bg_rev, [bg_rev[-1]]])                 # 13 (bg_60 dropped by pipe)
+            bg_diff = bg_lag[:-1] - bg_lag[1:]                             # 12 (newer - older)
+            ins_rev = np.asarray(info["hist_insulin"], dtype=float)[::-1]   # newest->oldest (12)
+            carb_rev = np.asarray(info["hist_meal"], dtype=float)[::-1]     # newest->oldest (12)
+            values = np.concatenate([["p02"], [5], [sin_t, cos_t],
+                                     bg_lag, bg_diff, ins_rev, carb_rev])
+        else:
+            hist_bg = np.asarray(info["hist_bg"], dtype=float) / 18.0182
+            bg_lags = np.concatenate([hist_bg, [current_bg / 18.0182]])
+            values = np.concatenate([["p02"], [5], [sin_t, cos_t],
+                                     bg_lags, np.diff(bg_lags),
+                                     np.asarray(info["hist_insulin"], dtype=float),
+                                     np.asarray(info["hist_meal"], dtype=float)])
+        df = pd.DataFrame(values.reshape(1, -1), columns=cols)
+        for col in df.columns:
+            if col != "p_num":
+                df[col] = df[col].astype(float)
+        return df
+
     def step(self, action):
         obs, _, term, trunc, info = self.env.step(action)
         t: datetime = info["time"]
@@ -156,21 +197,7 @@ class LGBMRewardWrapper(gym.Wrapper):
         current_bg = float(info["bg"])
         # Build 60‑minute feature window (mmol→mg conversion inside)
         hist_bg = info["hist_bg"] / 18.0182
-        bg_lags = np.concatenate([hist_bg, [current_bg / 18.0182]])
-
-        features = np.concatenate([
-            ["p02"],            # patient ID
-            [5],                # prediction horizon (5min)
-            [sin_t, cos_t],
-            bg_lags,
-            np.diff(bg_lags),
-            info["hist_insulin"],
-            info["hist_meal"],
-        ])
-        df = pd.DataFrame(features.reshape(1, -1), columns=self._transform.feature_names_in_)
-        for col in df.columns:
-            if col != "p_num":
-                df[col] = df[col].astype(float)
+        df = self._build_feature_row(current_bg, sin_t, cos_t, info)
         Xt = self._transform.transform(df).astype(float)
         pred_bg = float(self._regressor.predict(Xt)[0]) * 18.0182 # mmol→mg
 
@@ -181,7 +208,7 @@ class LGBMRewardWrapper(gym.Wrapper):
         bg_future = max(1.0, slope * 120 + intercept)
 
         bg_for_reward = bg_future if abs(pred_bg - current_bg) >= 50 else pred_bg
-        base = continuous_reward(bg_for_reward, target=140.0, sigma=30.0)
+        base = continuous_reward(bg_for_reward, target=REWARD_TARGET, sigma=REWARD_SIGMA)
 
         curr_risk = self._risk(bg_for_reward)
         reward = base + self._lamda_risk * (self._prev_risk - curr_risk) - self._lamda_ins * float(np.array(action).ravel()[0])
@@ -217,8 +244,10 @@ class SafetyFilter(gym.ActionWrapper):
         a_scalar = float(np.array(action).ravel()[0])
         safe = self._safe_action(a_scalar)
         if isinstance(self.action_space, Box):
-            safe = np.clip(safe, self.action_space.low, self.action_space.high)
-        return np.array([safe], dtype=self.action_space.dtype)
+            lo = float(np.ravel(self.action_space.low)[0])
+            hi = float(np.ravel(self.action_space.high)[0])
+            safe = float(np.clip(safe, lo, hi))
+        return np.asarray([safe], dtype=self.action_space.dtype)  # ensure shape (1,)
 
     def step(self, action):
         self._prev_bg = self._last_bg
@@ -247,7 +276,10 @@ class FeatureObsWrapper(gym.Wrapper):
         h_ins = np.asarray(info.get("hist_insulin", np.zeros(self._hist_len)), dtype=np.float32)
         h_meal = np.asarray(info.get("hist_meal", np.zeros(self._hist_len)), dtype=np.float32)
         sincos = np.array([info.get("sin_t", 0.0), info.get("cos_t", 0.0)], dtype=np.float32)
-        pred = np.array([info.get("pred_bg30", obs[-1])], dtype=np.float32)
+        # FIX: read the key the reward wrapper actually writes ("pred_bg60").
+        # With FIX off, keep the original (broken) "pred_bg30" -> obs[-1] fallback.
+        pred_key = "pred_bg60" if FIX else "pred_bg30"
+        pred = np.array([info.get(pred_key, obs[-1])], dtype=np.float32)
         return np.concatenate([obs, h_bg, h_ins, h_meal, sincos, pred])
 
     def reset(self, **kwargs):
@@ -434,48 +466,64 @@ def _bg_insulin_plots(bg: List[float], ins: List[float]) -> None:
 
 
 def evaluate_agent(*, episodes: int = 20) -> None:
-    """Evaluate the saved model deterministically and print metrics."""
+    """Evaluate the saved model and print metrics.
+
+    Fixes vs. the original: (1) observations are normalised with the *training*
+    VecNormalize statistics before being fed to the policy, and (2) each episode
+    uses a *distinct* seed, so the across-episode spread is real (it was
+    identically seeded -> +-0.00 before)."""
     if not MODEL_CKPT.exists():
         raise FileNotFoundError("No trained model found. Run `train` first.")
 
     vec_env = _build_vec_env(1, load_stats=True)
     vec_env.training = False
+    vec_env.norm_reward = False
+    if not VEC_NORM_STATS.exists():
+        print("[WARN] vec_normalize_stats missing -> obs NOT normalised; numbers unreliable.")
     model = PPO.load(MODEL_CKPT, env=vec_env)
 
-    # SB3 helper for mean episode reward
+    # SB3 helper for mean episode reward (runs through the normalised vec-env)
     mean_r, std_r = evaluate_policy(model, vec_env, n_eval_episodes=episodes, deterministic=True)
-    print(f"Mean episode reward over {episodes}eps: {mean_r:.2f}±{std_r:.2f}")
+    print(f"Mean episode reward over {episodes}eps: {mean_r:.2f}+-{std_r:.2f}")
 
-    # Custom BG safety metrics (TIR, LBGI, HBGI)
-    tir_cnt = tir_tot = 0
-    lbgi_vals, hbgi_vals = [], []
+    # Custom BG safety metrics (per-episode TIR so we can report a real spread)
+    per_ep_tir, lbgi_vals, hbgi_vals = [], [], []
+    tbr54 = total = 0
     for ep in range(episodes):
         env = env_factory()
-        obs, info = env.reset(seed=SEED)
+        obs, info = env.reset(seed=SEED + ep)           # distinct seed per episode
         done = False
+        ep_in = ep_tot = 0
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            nobs = vec_env.normalize_obs(np.asarray(obs, dtype=np.float32))
+            action, _ = model.predict(nobs, deterministic=True)
             obs, _, term, trunc, info = env.step(action)
             done = term or trunc
             bg = float(info["bg"])
-            fbg = 1.509 * ((np.log(bg)) ** 1.084 - 5.381)
+            fbg = 1.509 * ((np.log(max(bg, 1e-3))) ** 1.084 - 5.381)
             rbg = 10 * fbg ** 2
             (lbgi_vals if fbg < 0 else hbgi_vals).append(rbg)
-            tir_tot += 1
+            ep_tot += 1
+            total += 1
             if 70 <= bg <= 180:
-                tir_cnt += 1
+                ep_in += 1
+            if bg < 54:
+                tbr54 += 1
         env.close()
+        per_ep_tir.append(100.0 * ep_in / max(ep_tot, 1))
 
-    print(f"Time‑in‑Range: {100 * tir_cnt / tir_tot:.2f}%")
-    print(f"LBGI (mean):  {np.mean(lbgi_vals):.2f}")
-    print(f"HBGI (mean):  {np.mean(hbgi_vals):.2f}")
+    print(f"Time-in-Range: {np.mean(per_ep_tir):.2f}% +- {np.std(per_ep_tir):.2f}  (n={episodes} seeds)")
+    print(f"LBGI (mean):   {np.mean(lbgi_vals) if lbgi_vals else 0.0:.2f}")
+    print(f"HBGI (mean):   {np.mean(hbgi_vals) if hbgi_vals else 0.0:.2f}")
+    print(f"Time-below-54: {100.0 * tbr54 / max(total, 1):.2f}%  (severe hypo)")
 
-    # Single‑episode trace for visual sanity check
+    # Single-episode trace for visual sanity check (also normalised)
     viz_env = env_factory()
     bg_traj, ins_traj = [], []
     obs, info = viz_env.reset(seed=SEED)
     for _ in range(EPISODE_STEPS):
-        action, _ = model.predict(obs, deterministic=True)
+        nobs = vec_env.normalize_obs(np.asarray(obs, dtype=np.float32))
+        action, _ = model.predict(nobs, deterministic=True)
         ins_traj.append(float(np.array(action).ravel()[0]))
         bg_traj.append(info["bg"])
         obs, _, term, trunc, info = viz_env.step(action)
