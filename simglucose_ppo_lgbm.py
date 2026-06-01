@@ -27,6 +27,7 @@ from gymnasium.spaces import Box
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     BaseCallback,
+    CheckpointCallback,
     EvalCallback,
     ProgressBarCallback,
 )
@@ -434,6 +435,18 @@ def train_rl_agent() -> None:
                 eval_freq=EVAL_FREQ // NUM_ENVS,
                 n_eval_episodes=N_EVAL_EPISODES,
                 deterministic=True,
+            )
+        )
+
+    # 3b.Periodic checkpoints (resilience for long runs): SIMGLU_CKPT_FREQ=<steps>
+    ckpt_freq = int(os.environ.get("SIMGLU_CKPT_FREQ", "0"))
+    if ckpt_freq > 0:
+        callbacks.append(
+            CheckpointCallback(
+                save_freq=max(1, ckpt_freq // NUM_ENVS),
+                save_path=str(LOG_DIR / "checkpoints"),
+                name_prefix=f"ckpt{_suffix}",
+                save_vecnormalize=True,
             )
         )
 
