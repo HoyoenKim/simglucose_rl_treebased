@@ -33,7 +33,7 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.policies import ActorCriticPolicy
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from torch.distributions import Beta
 from torch.nn import functional as F
 
@@ -369,7 +369,9 @@ class TrainPlotCallback(BaseCallback):
 
 def _build_vec_env(n_envs: int, *, load_stats: bool = False) -> VecNormalize:
     """Create *DummyVecEnv → VecNormalize* (optionally restore running‑stats)."""
-    venv = DummyVecEnv([env_factory for _ in range(n_envs)])
+    use_subproc = os.environ.get("SIMGLU_SUBPROC", "0") == "1" and n_envs > 1
+    vec_cls = SubprocVecEnv if use_subproc else DummyVecEnv  # SubprocVecEnv parallelises the slow env across processes
+    venv = vec_cls([env_factory for _ in range(n_envs)])
     vec = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=5.0)
     if load_stats and VEC_NORM_STATS.exists():
         vec = VecNormalize.load(str(VEC_NORM_STATS), venv)
