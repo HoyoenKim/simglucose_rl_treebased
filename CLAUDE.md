@@ -209,3 +209,51 @@ Ordered by severity. File:line references are to `simglucose_ppo_lgbm.py` unless
    simglucose data (#4) — aligns with the "Future Work: simulator-pretrained predictor".
 5. Clean up reproducibility/hygiene (#10–#15).
 ```
+
+---
+
+## 8. Applied fixes & verification — branch `claude/bugfix-smoke`
+
+§7 issues #1–#3, #5, #6, #9 were confirmed and fixed in `simglucose_ppo_lgbm.py`, then
+verified on a Linux box (newport, env `hykim_ect2`, **CPU** torch — the workload is
+CPU/env-bound so the GPU gives no benefit).
+
+### Confirmed (was "suspected" in §7)
+- **Feature time-reversal + duplicate.** Loading the saved pipeline shows
+  `feature_names_in_` expects **newest-first** (`bg_0_lag`=now … `bg_60_lag`=60 min ago; same
+  for insulin/carbs). The wrapper fed **oldest-first** with a duplicated "now" and a missing
+  60-min point — so the *used* features (`bg_0..30_lag`, all insulin/carbs) were corrupted.
+
+### Fixes
+- `LGBMRewardWrapper._build_feature_row`: histories reversed to newest-first, bg diffs
+  recomputed (newer−older), duplicate "now" removed.
+- `FeatureObsWrapper`: reads `pred_bg60` (was the never-set `pred_bg30` → the policy never
+  actually saw the forecast).
+- `evaluate_agent`: normalises obs with the training-time VecNormalize stats; uses a distinct
+  seed per episode; reports TIR±std and time-below-54.
+- `SafetyFilter.action` returns shape `(1,)`; reward target/σ are explicit constants (140/30).
+- Toggles: `SIMGLU_FIX` (0 = original buggy path, kept for A/B), `SIMGLU_TAG`, `SIMGLU_STEPS`,
+  `SIMGLU_ENVS`.
+
+### Evidence #1 — predictor quality (decisive, no training)
+1 h LightGBM forecast vs the simulator's *actual* BG 12 steps later, same trajectory:
+
+| feature row | 1 h MAE | corr(pred, actual) |
+|---|---:|---:|
+| BUGGY (reversed) | 41.0 mg/dL | +0.858 |
+| **FIXED** | **28.4 mg/dL** | **+0.961** |
+
+→ forecast error −31 %; the reward signal the PPO agent optimises is materially more accurate.
+
+### Evidence #2 — RL smoke A/B (15 000 steps, CPU, 5 seeds) — *pipeline + eval validity*
+| | FIXED | BUGGY |
+|---|---:|---:|
+| TIR | 25.3 % ± 5.18 | 22.1 % ± 6.32 |
+| HBGI | 33.4 | 36.8 |
+| LBGI / TBR<54 | 0.00 / 0.0 % | 0.00 / 0.0 % |
+
+The eval now shows a **real across-seed spread** (was `±0.00` = effectively n=1). At 15 k steps
+both models are heavily undertrained (full run = 2.3 M = 150×), so the TIR gap is within noise
+— *not* a generalisation claim. Env ≈ 15 steps/s (each step runs a full LightGBM predict +
+simglucose ODE), so a full retrain is ~tens of hours on CPU; use `SubprocVecEnv` or a lighter
+predictor to speed it up.
