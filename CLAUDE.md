@@ -257,3 +257,20 @@ both models are heavily undertrained (full run = 2.3 M = 150×), so the TIR gap 
 — *not* a generalisation claim. Env ≈ 15 steps/s (each step runs a full LightGBM predict +
 simglucose ODE), so a full retrain is ~tens of hours on CPU; use `SubprocVecEnv` or a lighter
 predictor to speed it up.
+
+### Evidence #3 — RL A/B at 150 k steps (10× the smoke, SubprocVecEnv×12, 8 seeds)
+| | FIXED | BUGGY |
+|---|---:|---:|
+| reward (each vs its *own* objective) | +100.0 | −386.8 |
+| TIR | 39.4 % ± 12.7 | 51.7 % ± 11.1 |
+| **time-below-54 (severe hypo)** | **2.25 %** | 9.03 % |
+| LBGI / HBGI | 18.6 / 13.8 | 17.6 / 11.0 |
+
+**This is *not* a clean "fixed wins on TIR".** BUGGY shows *higher* TIR but reaches it by over-dosing
+into **4× more severe hypoglycaemia** (9.0 % vs 2.25 % time < 54 mg/dL). FIXED optimises the corrected
+reward (+100 vs −387) and is safer but spends more time high → lower TIR. This re-demonstrates §7 #7
+(**TIR alone is misleading** — the higher-TIR policy is the more dangerous one). Both remain
+undertrained (150 k = 1/15 of the 2.3 M full run) with LBGI ≈ 18, so neither is a good controller yet.
+The decisive "the fix improves the optimisation signal" result is **Evidence #1** (predictor MAE
+41 → 28); the RL A/B mainly confirms the pipeline runs end-to-end and the eval is now valid (real
+across-seed spread). A trustworthy performance comparison needs a full-length retrain.
