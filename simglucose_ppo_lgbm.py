@@ -326,6 +326,7 @@ def _register_env() -> None:
 
 def env_factory() -> gym.Env:
     """Return **one** fully wrapped environment instance."""
+    _register_env()  # idempotent; required inside SubprocVecEnv workers (spawn/forkserver)
     env = gym.make(ENV_ID)
     env = MultiHistoryWrapper(env)
     env = LGBMRewardWrapper(env)
