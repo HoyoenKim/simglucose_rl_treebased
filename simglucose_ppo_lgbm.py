@@ -419,22 +419,23 @@ def train_rl_agent() -> None:
             max_grad_norm=0.5,
         )
 
-    # 3.Set up callbacks
-    eval_vec = _build_vec_env(1, load_stats=True)
-    eval_vec.training = False
-
-    callbacks = [
-        TrainPlotCallback(),
-        ProgressBarCallback(),
-        EvalCallback(
-            eval_vec,
-            best_model_save_path=str(BEST_MODEL_DIR),
-            log_path=str(LOG_DIR),
-            eval_freq=EVAL_FREQ // NUM_ENVS,
-            n_eval_episodes=N_EVAL_EPISODES,
-            deterministic=True,
-        ),
-    ]
+    # 3.Set up callbacks. EvalCallback runs a slow single-env eval every EVAL_FREQ
+    # steps; on the LightGBM-in-the-loop env that dominates wall-clock on long runs,
+    # so SIMGLU_NOEVAL=1 skips it.
+    callbacks = [TrainPlotCallback(), ProgressBarCallback()]
+    if os.environ.get("SIMGLU_NOEVAL", "0") != "1":
+        eval_vec = _build_vec_env(1, load_stats=True)
+        eval_vec.training = False
+        callbacks.append(
+            EvalCallback(
+                eval_vec,
+                best_model_save_path=str(BEST_MODEL_DIR),
+                log_path=str(LOG_DIR),
+                eval_freq=EVAL_FREQ // NUM_ENVS,
+                n_eval_episodes=N_EVAL_EPISODES,
+                deterministic=True,
+            )
+        )
 
     # 4.Learn
     model.learn(total_timesteps=TOTAL_TIMESTEPS, reset_num_timesteps=reset_num_timesteps, callback=callbacks)
