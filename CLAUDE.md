@@ -274,3 +274,22 @@ undertrained (150 k = 1/15 of the 2.3 M full run) with LBGI ≈ 18, so neither i
 The decisive "the fix improves the optimisation signal" result is **Evidence #1** (predictor MAE
 41 → 28); the RL A/B mainly confirms the pipeline runs end-to-end and the eval is now valid (real
 across-seed spread). A trustworthy performance comparison needs a full-length retrain.
+
+### Evidence #4 — full retrain (2.3 M steps, FIXED, 20-seed eval) — *the trustworthy number*
+Re-trained the FIXED `PPO + LightGBM + Reward` config to the original 2.3 M-step budget
+(SubprocVecEnv×24, `SIMGLU_NOEVAL=1`, periodic checkpoints), evaluated over 20 distinct seeds
+through the corrected harness:
+
+| metric | original README (buggy, n=1) | **FIXED full (2.3 M, n=20)** |
+|---|---:|---:|
+| TIR | 67.93 % | **77.80 % ± 11.91** |
+| LBGI | 28.39 | 17.43 |
+| HBGI | 4.61 | 4.72 |
+| time-below-54 | — | 3.90 % |
+
+The fixed model trains to **higher TIR *and* lower LBGI** than the original (mis-measured) claim,
+with a genuine 20-seed spread. **But it is still not clinically safe**: LBGI ≈ 17 (>5 = high hypo
+risk) and 3.9 % time < 54 mg/dL (consensus target < 1 %). So the 77.8 % TIR headline *still* masks
+a hypoglycaemia problem — the fix improves the controller but does not resolve §7 #7. Single patient
+(`adolescent#002`), single config; the SAC / filter-only / no-filter rows still need their own
+full-budget runs before the README table is complete.

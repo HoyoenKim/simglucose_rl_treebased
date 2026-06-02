@@ -189,8 +189,10 @@ python simglucose_ppo_lgbm.py eval --episodes 20
 | **SAC + Filter**            |   61.09 |       52.39 |        1.94 |               TBD |
 | **PPO**                     |   22.72 |        0.00 |       33.39 |               TBD |
 | **PPO + LightGBM**          |   60.76 |       41.45 |        2.73 |               TBD |
-| **PPO + LightGBM + Reward** |   67.93 |       28.39 |        4.61 |               TBD |
+| **PPO + LightGBM + Reward** ✅ | **77.80 ± 11.91** |   17.43 |    4.72 |              3.90 |
 | **Filter-only (no RL)**     |     TBD |         TBD |         TBD |               TBD |
+
+> ✅ = **re-validated** on the bug-fixed pipeline (2.3M steps, 20 seeds, patient `adolescent#002`). Other rows are pre-fix numbers being re-validated next. Note: even this re-validated config still has **LBGI ≈ 17** and **3.90 % time < 54 mg/dL** — a high TIR (77.8 %) does **not** mean the controller is safe.
 
 > **TIR alone is misleading.** The high-TIR configs also carry very high **LBGI (28–52)** —
 > i.e. frequent/severe **hypoglycemia**, which is clinically more dangerous than the
