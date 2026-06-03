@@ -175,31 +175,38 @@ tensorboard --logdir ./logs
 python simglucose_ppo_lgbm.py eval --episodes 20 
 ```
 
-#### 4.1 Key Metrics
+#### 4.1 Key Metrics — bug-fixed pipeline (patient `adolescent#002`, 20 eval seeds)
 
-> ⚠️ **Preliminary / under re-validation — do not cite as final.** These numbers came from the
-> pre-fix pipeline whose evaluation was faulty (the same seed was used for every episode →
-> `±0.00` spread = effectively n=1; observations were not normalized at eval time) and whose
-> LightGBM feature row was time-reversed. They are being regenerated on the bug-fixed pipeline
-> (branch `claude/bugfix-smoke`); see `CLAUDE.md` §7–§8.
+All rows are **re-validated** on the bug-fixed pipeline with the corrected evaluation
+(observations normalized to training stats; 20 distinct seeds; `±` = spread across seeds).
+PPO configs use the full 2.3M-step budget; SAC uses 100k (its notebook budget); filter-only
+needs no training. See `CLAUDE.md` §7–§8 for the bugs and the verification log.
 
-| Method                      | TIR (%) | LBGI (mean) | HBGI (mean) | Time-below-54 (%) |
-| --------------------------- | ------: | ----------: | ----------: | ----------------: |
-| **SAC (baseline)**          |   23.30 |        0.00 |       33.12 |               TBD |
-| **SAC + Filter**            |   61.09 |       52.39 |        1.94 |               TBD |
-| **PPO**                     |   22.72 |        0.00 |       33.39 |               TBD |
-| **PPO + LightGBM**          |   60.76 |       41.45 |        2.73 |               TBD |
-| **PPO + LightGBM + Reward** ✅ | **77.80 ± 11.91** |   17.43 |    4.72 |              3.90 |
-| **Filter-only (no RL)**     |     TBD |         TBD |         TBD |               TBD |
+| Controller | TIR (%) | LBGI | HBGI | Time-below-54 (%) |
+| --- | ---: | ---: | ---: | ---: |
+| Filter-only (no RL, zero policy) | 23.49 ± 7.28 | 0.00 | 39.51 | 0.00 |
+| SAC + risk-delta (no filter) | 56.84 ± 13.43 | 45.53 | 2.37 | **38.01** |
+| SAC + risk-delta + filter | 26.47 ± 11.34 | 0.00 | 39.23 | 0.00 |
+| PPO + LightGBM + Reward (no filter) | 74.92 ± 12.92 | 14.14 | 6.04 | 2.15 |
+| **PPO + LightGBM + Reward (+ filter)** | **77.80 ± 11.91** | 17.43 | 4.72 | 3.90 |
 
-> ✅ = **re-validated** on the bug-fixed pipeline (2.3M steps, 20 seeds, patient `adolescent#002`). Other rows are pre-fix numbers being re-validated next. Note: even this re-validated config still has **LBGI ≈ 17** and **3.90 % time < 54 mg/dL** — a high TIR (77.8 %) does **not** mean the controller is safe.
-
-> **TIR alone is misleading.** The high-TIR configs also carry very high **LBGI (28–52)** —
-> i.e. frequent/severe **hypoglycemia**, which is clinically more dangerous than the
-> hyperglycemia they remove. Maximizing TIR while LBGI climbs is *not* an improvement. The
-> re-validated results report **time-below-54 mg/dL** and **±std across seeds** with equal
-> prominence, and add a **filter-only** baseline (plus a **no-filter RL** arm) so gains can be
-> attributed to the learned policy vs. the hand-written safety filter instead of being conflated.
+> **Read LBGI / time-below-54, not TIR alone.**
+>
+> - **The learned policy — not the safety filter — drives the result.** PPO+LGBM+Reward reaches
+>   ~75% TIR *without* any filter; adding the filter only nudges TIR 75→78% while *raising*
+>   hypoglycemia (LBGI 14→17, time<54 2.15→3.90%). The original "the filter does the work" story
+>   does **not** hold for the fixed pipeline — here the filter is even mildly counter-productive
+>   for safety.
+> - **Filter-only ≈ 23%** (no dosing → hyperglycemia): the filter alone is just a safety overlay.
+> - **SAC is unstable / unsafe here.** Across single training seeds it swings between under-dosing
+>   (26% TIR, hyperglycemia) and over-dosing (57% TIR but **38% of time < 54 mg/dL** — severe
+>   hypoglycemia). The original single-seed SAC numbers (23% / 61%) are not reproducible.
+> - **No config is clinically safe yet:** even the best (77.8% TIR) has LBGI ≈ 17 and ~4% time
+>   < 54 mg/dL (consensus target < 1%). **High TIR ≠ safe.**
+>
+> *(The original "PPO" (no-LGBM) and "PPO + LightGBM" (no custom reward) rows came from the buggy
+> pipeline and are superseded; re-validating them would need reward-variant flags plus another
+> full LGBM training run.)*
 
 #### 4.2 BG & Insulin Trajectories
 
