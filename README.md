@@ -33,8 +33,8 @@ An end-to-end pipeline for predicting future blood glucose (BG) levels with Ligh
 #### PPO + LightGBM Agent
 
 * On-policy proximal policy optimization wrapped around a Beta action distribution for continuous insulin dosing.
-* **Integrated Predictor**: LightGBM BG forecast feeds into the PPO reward and decision logic.
-* **Reward**: Custom continuous function penalizing deviations from target 125 mg/dL, scaled at ±σ and multiplied beyond ±2σ.
+* **Integrated Predictor**: the LightGBM 1-hour BG forecast feeds into both the PPO **reward** and the policy **observation**. (In the original code the forecast never reached the observation due to a `pred_bg30`/`pred_bg60` key mismatch — fixed on branch `claude/bugfix-smoke`; see `CLAUDE.md` §7–§8.)
+* **Reward**: Custom continuous (Gaussian-shaped) function penalizing deviations from target **140 mg/dL** (σ = 30 mg/dL), with asymmetric tail scaling beyond ±2σ that penalizes hypoglycemia far more strongly than hyperglycemia. (The README previously said 125 mg/dL; the code uses 140 — now pinned to explicit constants.)
 * **Policy**: MLP policy outputs insulin dose in \[0,1] normalized units.
 
 ---
@@ -175,19 +175,43 @@ tensorboard --logdir ./logs
 python simglucose_ppo_lgbm.py eval --episodes 20 
 ```
 
-#### 4.1 Key Metrics (20 episodes)
+#### 4.1 Key Metrics — bug-fixed pipeline (patient `adolescent#002`, 20 eval seeds)
 
-| Method                      | TIR (%) | LBGI (mean) | HBGI (mean) |
-| --------------------------- | ------: | ----------: | ----------: |
-| **SAC (baseline)**          |   23.30 |        0.00 |       33.12 |
-| **SAC + Filter**            |   61.09 |       52.39 |        1.94 |
-| **PPO**                     |   22.72 |        0.00 |       33.39 |
-| **PPO + LightGBM**          |   60.76 |       41.45 |        2.73 |
-| **PPO + LightGBM + Reward** |   67.93 |       28.39 |        4.61 |
+All rows are **re-validated** on the bug-fixed pipeline with the corrected evaluation
+(observations normalized to training stats; 20 distinct seeds; `±` = spread across seeds).
+PPO configs use the full 2.3M-step budget; SAC uses 100k (its notebook budget); filter-only
+needs no training. See `CLAUDE.md` §7–§8 for the bugs and the verification log.
+
+| Controller | TIR (%) | LBGI | HBGI | Time-below-54 (%) |
+| --- | ---: | ---: | ---: | ---: |
+| Filter-only (no RL, zero policy) | 23.49 ± 7.28 | 0.00 | 39.51 | 0.00 |
+| SAC + risk-delta (no filter) | 56.84 ± 13.43 | 45.53 | 2.37 | **38.01** |
+| SAC + risk-delta + filter | 26.47 ± 11.34 | 0.00 | 39.23 | 0.00 |
+| PPO + LightGBM + Reward (no filter) | 74.92 ± 12.92 | 14.14 | 6.04 | 2.15 |
+| **PPO + LightGBM + Reward (+ filter)** | **77.80 ± 11.91** | 17.43 | 4.72 | 3.90 |
+
+> **Read LBGI / time-below-54, not TIR alone.**
+>
+> - **The learned policy — not the safety filter — drives the result.** PPO+LGBM+Reward reaches
+>   ~75% TIR *without* any filter; adding the filter only nudges TIR 75→78% while *raising*
+>   hypoglycemia (LBGI 14→17, time<54 2.15→3.90%). The original "the filter does the work" story
+>   does **not** hold for the fixed pipeline — here the filter is even mildly counter-productive
+>   for safety.
+> - **Filter-only ≈ 23%** (no dosing → hyperglycemia): the filter alone is just a safety overlay.
+> - **SAC is unstable / unsafe here.** Across single training seeds it swings between under-dosing
+>   (26% TIR, hyperglycemia) and over-dosing (57% TIR but **38% of time < 54 mg/dL** — severe
+>   hypoglycemia). The original single-seed SAC numbers (23% / 61%) are not reproducible.
+> - **No config is clinically safe yet:** even the best (77.8% TIR) has LBGI ≈ 17 and ~4% time
+>   < 54 mg/dL (consensus target < 1%). **High TIR ≠ safe.**
+>
+> *(The original "PPO" (no-LGBM) and "PPO + LightGBM" (no custom reward) rows came from the buggy
+> pipeline and are superseded; re-validating them would need reward-variant flags plus another
+> full LGBM training run.)*
 
 #### 4.2 BG & Insulin Trajectories
 
-- Since simulator has randomness, the figure will be changed for each simulation.
+- The figures below are from the **bug-fixed full model** (PPO + LightGBM + Reward, 2.3M steps, patient `adolescent#002`, single representative seed). Note the BG trace still dips into hypoglycemia — consistent with the LBGI ≈ 17 / 3.9 % time-below-54 reported above.
+- Since the simulator has randomness, the trajectory changes each run.
 
 ![BG Trajectory](./Result/Figure/PPO_LGBM_reward_result_bg.png)
 

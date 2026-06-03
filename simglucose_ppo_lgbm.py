@@ -27,6 +27,7 @@ from gymnasium.spaces import Box
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     BaseCallback,
+    CheckpointCallback,
     EvalCallback,
     ProgressBarCallback,
 )
@@ -330,7 +331,8 @@ def env_factory() -> gym.Env:
     env = gym.make(ENV_ID)
     env = MultiHistoryWrapper(env)
     env = LGBMRewardWrapper(env)
-    env = SafetyFilter(env)
+    if os.environ.get("SIMGLU_NOFILTER", "0") != "1":   # SIMGLU_NOFILTER=1 -> no-filter ablation arm
+        env = SafetyFilter(env)
     env = FeatureObsWrapper(env)
     env = Monitor(env)
     return env
@@ -419,22 +421,35 @@ def train_rl_agent() -> None:
             max_grad_norm=0.5,
         )
 
-    # 3.Set up callbacks
-    eval_vec = _build_vec_env(1, load_stats=True)
-    eval_vec.training = False
+    # 3.Set up callbacks. EvalCallback runs a slow single-env eval every EVAL_FREQ
+    # steps; on the LightGBM-in-the-loop env that dominates wall-clock on long runs,
+    # so SIMGLU_NOEVAL=1 skips it.
+    callbacks = [TrainPlotCallback(), ProgressBarCallback()]
+    if os.environ.get("SIMGLU_NOEVAL", "0") != "1":
+        eval_vec = _build_vec_env(1, load_stats=True)
+        eval_vec.training = False
+        callbacks.append(
+            EvalCallback(
+                eval_vec,
+                best_model_save_path=str(BEST_MODEL_DIR),
+                log_path=str(LOG_DIR),
+                eval_freq=EVAL_FREQ // NUM_ENVS,
+                n_eval_episodes=N_EVAL_EPISODES,
+                deterministic=True,
+            )
+        )
 
-    callbacks = [
-        TrainPlotCallback(),
-        ProgressBarCallback(),
-        EvalCallback(
-            eval_vec,
-            best_model_save_path=str(BEST_MODEL_DIR),
-            log_path=str(LOG_DIR),
-            eval_freq=EVAL_FREQ // NUM_ENVS,
-            n_eval_episodes=N_EVAL_EPISODES,
-            deterministic=True,
-        ),
-    ]
+    # 3b.Periodic checkpoints (resilience for long runs): SIMGLU_CKPT_FREQ=<steps>
+    ckpt_freq = int(os.environ.get("SIMGLU_CKPT_FREQ", "0"))
+    if ckpt_freq > 0:
+        callbacks.append(
+            CheckpointCallback(
+                save_freq=max(1, ckpt_freq // NUM_ENVS),
+                save_path=str(LOG_DIR / "checkpoints"),
+                name_prefix=f"ckpt{_suffix}",
+                save_vecnormalize=True,
+            )
+        )
 
     # 4.Learn
     model.learn(total_timesteps=TOTAL_TIMESTEPS, reset_num_timesteps=reset_num_timesteps, callback=callbacks)
@@ -535,6 +550,41 @@ def evaluate_agent(*, episodes: int = 20) -> None:
     viz_env.close()
     _bg_insulin_plots(bg_traj, ins_traj)
 
+
+def evaluate_baseline(*, episodes: int = 20, action: float = 0.0) -> None:
+    """No-RL baseline: apply a constant *action* through the full wrapper stack.
+
+    With SafetyFilter active (default) this is the **filter-only** arm; with
+    SIMGLU_NOFILTER=1 it is the raw constant-action arm. No policy / normalization."""
+    per_ep_tir, lbgi_vals, hbgi_vals = [], [], []
+    tbr54 = total = 0
+    a = np.array([action], dtype=np.float32)
+    for ep in range(episodes):
+        env = env_factory()
+        _, info = env.reset(seed=SEED + ep)
+        done = False
+        ep_in = ep_tot = 0
+        while not done:
+            _, _, term, trunc, info = env.step(a)
+            done = term or trunc
+            bg = float(info["bg"])
+            fbg = 1.509 * ((np.log(max(bg, 1e-3))) ** 1.084 - 5.381)
+            (lbgi_vals if fbg < 0 else hbgi_vals).append(10 * fbg ** 2)
+            ep_tot += 1
+            total += 1
+            if 70 <= bg <= 180:
+                ep_in += 1
+            if bg < 54:
+                tbr54 += 1
+        env.close()
+        per_ep_tir.append(100.0 * ep_in / max(ep_tot, 1))
+    filt = "OFF" if os.environ.get("SIMGLU_NOFILTER", "0") == "1" else "ON"
+    print(f"[baseline action={action} filter={filt}]")
+    print(f"Time-in-Range: {np.mean(per_ep_tir):.2f}% +- {np.std(per_ep_tir):.2f}  (n={episodes} seeds)")
+    print(f"LBGI (mean):   {np.mean(lbgi_vals) if lbgi_vals else 0.0:.2f}")
+    print(f"HBGI (mean):   {np.mean(hbgi_vals) if hbgi_vals else 0.0:.2f}")
+    print(f"Time-below-54: {100.0 * tbr54 / max(total, 1):.2f}%")
+
 # ───────────────────────────────────────────
 # 7.Entry‑point
 # ───────────────────────────────────────────
@@ -550,6 +600,11 @@ def main() -> None:
     eval_p = sub.add_parser("eval", help="Evaluate the saved agent")
     eval_p.add_argument("--episodes", type=int, default=20, help="#episodes for evaluation")
     eval_p.set_defaults(func=lambda args: evaluate_agent(episodes=args.episodes))
+
+    base_p = sub.add_parser("baseline", help="No-RL baseline: constant action through the wrapper stack")
+    base_p.add_argument("--episodes", type=int, default=20)
+    base_p.add_argument("--action", type=float, default=0.0)
+    base_p.set_defaults(func=lambda args: evaluate_baseline(episodes=args.episodes, action=args.action))
 
     args = parser.parse_args()
     args.func(args)

@@ -257,3 +257,63 @@ both models are heavily undertrained (full run = 2.3 M = 150×), so the TIR gap 
 — *not* a generalisation claim. Env ≈ 15 steps/s (each step runs a full LightGBM predict +
 simglucose ODE), so a full retrain is ~tens of hours on CPU; use `SubprocVecEnv` or a lighter
 predictor to speed it up.
+
+### Evidence #3 — RL A/B at 150 k steps (10× the smoke, SubprocVecEnv×12, 8 seeds)
+| | FIXED | BUGGY |
+|---|---:|---:|
+| reward (each vs its *own* objective) | +100.0 | −386.8 |
+| TIR | 39.4 % ± 12.7 | 51.7 % ± 11.1 |
+| **time-below-54 (severe hypo)** | **2.25 %** | 9.03 % |
+| LBGI / HBGI | 18.6 / 13.8 | 17.6 / 11.0 |
+
+**This is *not* a clean "fixed wins on TIR".** BUGGY shows *higher* TIR but reaches it by over-dosing
+into **4× more severe hypoglycaemia** (9.0 % vs 2.25 % time < 54 mg/dL). FIXED optimises the corrected
+reward (+100 vs −387) and is safer but spends more time high → lower TIR. This re-demonstrates §7 #7
+(**TIR alone is misleading** — the higher-TIR policy is the more dangerous one). Both remain
+undertrained (150 k = 1/15 of the 2.3 M full run) with LBGI ≈ 18, so neither is a good controller yet.
+The decisive "the fix improves the optimisation signal" result is **Evidence #1** (predictor MAE
+41 → 28); the RL A/B mainly confirms the pipeline runs end-to-end and the eval is now valid (real
+across-seed spread). A trustworthy performance comparison needs a full-length retrain.
+
+### Evidence #4 — full retrain (2.3 M steps, FIXED, 20-seed eval) — *the trustworthy number*
+Re-trained the FIXED `PPO + LightGBM + Reward` config to the original 2.3 M-step budget
+(SubprocVecEnv×24, `SIMGLU_NOEVAL=1`, periodic checkpoints), evaluated over 20 distinct seeds
+through the corrected harness:
+
+| metric | original README (buggy, n=1) | **FIXED full (2.3 M, n=20)** |
+|---|---:|---:|
+| TIR | 67.93 % | **77.80 % ± 11.91** |
+| LBGI | 28.39 | 17.43 |
+| HBGI | 4.61 | 4.72 |
+| time-below-54 | — | 3.90 % |
+
+The fixed model trains to **higher TIR *and* lower LBGI** than the original (mis-measured) claim,
+with a genuine 20-seed spread. **But it is still not clinically safe**: LBGI ≈ 17 (>5 = high hypo
+risk) and 3.9 % time < 54 mg/dL (consensus target < 1 %). So the 77.8 % TIR headline *still* masks
+a hypoglycaemia problem — the fix improves the controller but does not resolve §7 #7. Single patient
+(`adolescent#002`), single config; the SAC / filter-only / no-filter rows still need their own
+full-budget runs before the README table is complete.
+
+### Evidence #5 — complete re-validated ablation table (the honest table)
+All rows re-validated on the fixed pipeline with the corrected eval (20 seeds; SAC at 100k via the
+ported `sac_simglucose.py`, PPO at 2.3M):
+
+| controller | TIR % | LBGI | HBGI | time<54 % |
+|---|---:|---:|---:|---:|
+| filter-only (no RL) | 23.49 ± 7.28 | 0.00 | 39.51 | 0.00 |
+| SAC (no filter) | 56.84 ± 13.43 | 45.53 | 2.37 | 38.01 |
+| SAC + filter | 26.47 ± 11.34 | 0.00 | 39.23 | 0.00 |
+| PPO+LGBM+Reward (no filter) | 74.92 ± 12.92 | 14.14 | 6.04 | 2.15 |
+| PPO+LGBM+Reward (+filter) | 77.80 ± 11.91 | 17.43 | 4.72 | 3.90 |
+
+**Conclusions (resolve §7 #6, sharpen §7 #7):**
+- **The learned policy drives the gains, not the filter.** PPO+LGBM+Reward gets ~75 % TIR with **no**
+  filter; the filter adds only ~3 TIR points and *worsens* hypo (LBGI 14→17, time<54 2.15→3.90 %).
+  §7 #6's "can't separate RL from the filter" is now separated — it's the policy. (Filter-only alone
+  = 23 %.)
+- **SAC is unstable.** Same config, different training seed swings 26 % (under-dose, hyper) ↔ 57 %
+  TIR with **38 % time<54** (over-dose into severe hypo). The original 23 %/61 % were single-seed and
+  not reproducible.
+- **Still not clinically safe (§7 #7 holds).** Best config LBGI ≈ 17, ~4 % time<54 (target <1 %).
+- Single patient (`adolescent#002`), single training seed per config — multi-patient and
+  multi-training-seed are the remaining gaps.
